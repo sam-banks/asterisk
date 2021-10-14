@@ -120,6 +120,7 @@ struct acf_odbc_query {
 	char *sql_insert;
 	unsigned int flags;
 	int rowlimit;
+	int minargs;
 	struct ast_custom_function *acf;
 };
 
@@ -545,6 +546,14 @@ static int acf_odbc_write(struct ast_channel *chan, const char *cmd, char *s, co
 		return -1;
 	}
 
+	AST_STANDARD_APP_ARGS(args, s);
+	if (args.argc < query->minargs) {
+		ast_log(LOG_ERROR, "%d arguments supplied to '%s' requiring minimum %d\n",
+				args.argc, cmd, query->minargs);
+		AST_RWLIST_UNLOCK(&queries);
+		return -1;
+	}
+
 	if (!chan) {
 		if (!(chan = ast_dummy_channel_alloc())) {
 			AST_RWLIST_UNLOCK(&queries);
@@ -578,7 +587,8 @@ static int acf_odbc_write(struct ast_channel *chan, const char *cmd, char *s, co
 		return -1;
 	}
 
-	AST_STANDARD_APP_ARGS(args, s);
+	snprintf(varname, sizeof(varname), "%u", args.argc);
+	pbx_builtin_pushvar_helper(chan, "ARGC", varname);
 	for (i = 0; i < args.argc; i++) {
 		snprintf(varname, sizeof(varname), "ARG%d", i + 1);
 		pbx_builtin_pushvar_helper(chan, varname, args.field[i]);
@@ -603,6 +613,8 @@ static int acf_odbc_write(struct ast_channel *chan, const char *cmd, char *s, co
 		chan = ast_channel_unref(chan);
 	} else {
 		/* Restore prior values */
+		pbx_builtin_setvar_helper(chan, "ARGC", NULL);
+
 		for (i = 0; i < args.argc; i++) {
 			snprintf(varname, sizeof(varname), "ARG%d", i + 1);
 			pbx_builtin_setvar_helper(chan, varname, NULL);
@@ -756,6 +768,14 @@ static int acf_odbc_read(struct ast_channel *chan, const char *cmd, char *s, cha
 		return -1;
 	}
 
+	AST_STANDARD_APP_ARGS(args, s);
+	if (args.argc < query->minargs) {
+		ast_log(LOG_ERROR, "%d arguments supplied to '%s' requiring minimum %d\n",
+				args.argc, cmd, query->minargs);
+		AST_RWLIST_UNLOCK(&queries);
+		return -1;
+	}
+
 	if (!chan) {
 		if (!(chan = ast_dummy_channel_alloc())) {
 			AST_RWLIST_UNLOCK(&queries);
@@ -768,7 +788,8 @@ static int acf_odbc_read(struct ast_channel *chan, const char *cmd, char *s, cha
 		ast_autoservice_start(chan);
 	}
 
-	AST_STANDARD_APP_ARGS(args, s);
+	snprintf(varname, sizeof(varname), "%u", args.argc);
+	pbx_builtin_pushvar_helper(chan, "ARGC", varname);
 	for (x = 0; x < args.argc; x++) {
 		snprintf(varname, sizeof(varname), "ARG%d", x + 1);
 		pbx_builtin_pushvar_helper(chan, varname, args.field[x]);
@@ -780,6 +801,8 @@ static int acf_odbc_read(struct ast_channel *chan, const char *cmd, char *s, cha
 		chan = ast_channel_unref(chan);
 	} else {
 		/* Restore prior values */
+		pbx_builtin_setvar_helper(chan, "ARGC", NULL);
+
 		for (x = 0; x < args.argc; x++) {
 			snprintf(varname, sizeof(varname), "ARG%d", x + 1);
 			pbx_builtin_setvar_helper(chan, varname, NULL);
@@ -920,15 +943,17 @@ static int acf_odbc_read(struct ast_channel *chan, const char *cmd, char *s, cha
 
 			if (y == 0) {
 				char colname[256];
-				SQLULEN maxcol = 0;
+				SQLLEN octetlength = 0;
 
-				res = SQLDescribeCol(stmt, x + 1, (unsigned char *)colname, sizeof(colname), &collength, NULL, &maxcol, NULL, NULL);
-				ast_debug(3, "Got collength of %d and maxcol of %d for column '%s' (offset %d)\n", (int)collength, (int)maxcol, colname, x);
+				res = SQLDescribeCol(stmt, x + 1, (unsigned char *)colname, sizeof(colname), &collength, NULL, NULL, NULL, NULL);
+				ast_debug(3, "Got collength of %d for column '%s' (offset %d)\n", (int)collength, colname, x);
 				if (((res != SQL_SUCCESS) && (res != SQL_SUCCESS_WITH_INFO)) || collength == 0) {
 					snprintf(colname, sizeof(colname), "field%d", x);
 				}
 
-				ast_str_make_space(&coldata, maxcol + 1);
+				SQLColAttribute(stmt, x + 1, SQL_DESC_OCTET_LENGTH, NULL, 0, NULL, &octetlength);
+
+				ast_str_make_space(&coldata, octetlength + 1);
 
 				if (ast_str_strlen(colnames)) {
 					ast_str_append(&colnames, 0, ",");
@@ -1179,7 +1204,7 @@ static int free_acf_query(struct acf_odbc_query *query)
 static int init_acf_query(struct ast_config *cfg, char *catg, struct acf_odbc_query **query)
 {
 	const char *tmp;
-	const char *tmp2;
+	const char *tmp2 = NULL;
 	int i;
 
 	if (!cfg || !catg) {
@@ -1286,6 +1311,10 @@ static int init_acf_query(struct ast_config *cfg, char *catg, struct acf_odbc_qu
 			ast_set_flag((*query), OPT_MULTIROW);
 		if ((tmp = ast_variable_retrieve(cfg, catg, "rowlimit")))
 			sscanf(tmp, "%30d", &((*query)->rowlimit));
+	}
+
+	if ((tmp = ast_variable_retrieve(cfg, catg, "minargs"))) {
+		sscanf(tmp, "%30d", &((*query)->minargs));
 	}
 
 	(*query)->acf = ast_calloc(1, sizeof(struct ast_custom_function));
@@ -1404,7 +1433,7 @@ static char *cli_odbc_read(struct ast_cli_entry *e, int cmd, struct ast_cli_args
 		AST_APP_ARG(field)[100];
 	);
 	struct ast_str *sql;
-	char *char_args, varname[10];
+	char *char_args, varname[15];
 	struct acf_odbc_query *query;
 	struct ast_channel *chan;
 	int i;
@@ -1498,10 +1527,9 @@ static char *cli_odbc_read(struct ast_cli_entry *e, int cmd, struct ast_cli_args
 		SQLHSTMT stmt;
 		int rows = 0, res, x;
 		SQLSMALLINT colcount = 0, collength;
-		SQLLEN indicator;
+		SQLLEN indicator, octetlength;
 		struct ast_str *coldata = ast_str_thread_get(&coldata_buf, 16);
 		char colname[256];
-		SQLULEN maxcol;
 
 		if (!coldata) {
 			AST_RWLIST_UNLOCK(&queries);
@@ -1560,14 +1588,15 @@ static char *cli_odbc_read(struct ast_cli_entry *e, int cmd, struct ast_cli_args
 			}
 			for (;;) {
 				for (x = 0; x < colcount; x++) {
-					maxcol = 0;
-
-					res = SQLDescribeCol(stmt, x + 1, (unsigned char *)colname, sizeof(colname), &collength, NULL, &maxcol, NULL, NULL);
+					res = SQLDescribeCol(stmt, x + 1, (unsigned char *)colname, sizeof(colname), &collength, NULL, NULL, NULL, NULL);
 					if (((res != SQL_SUCCESS) && (res != SQL_SUCCESS_WITH_INFO)) || collength == 0) {
 						snprintf(colname, sizeof(colname), "field%d", x);
 					}
 
-					res = ast_odbc_ast_str_SQLGetData(&coldata, maxcol, stmt, x + 1, SQL_CHAR, &indicator);
+					octetlength = 0;
+					SQLColAttribute(stmt, x + 1, SQL_DESC_OCTET_LENGTH, NULL, 0, NULL, &octetlength);
+
+					res = ast_odbc_ast_str_SQLGetData(&coldata, octetlength + 1, stmt, x + 1, SQL_CHAR, &indicator);
 					if (indicator == SQL_NULL_DATA) {
 						ast_str_set(&coldata, 0, "(nil)");
 						res = SQL_SUCCESS;
@@ -1620,7 +1649,7 @@ static char *cli_odbc_write(struct ast_cli_entry *e, int cmd, struct ast_cli_arg
 		AST_APP_ARG(field)[100];
 	);
 	struct ast_str *sql;
-	char *char_args, *char_values, varname[10];
+	char *char_args, *char_values, varname[15];
 	struct acf_odbc_query *query;
 	struct ast_channel *chan;
 	int i;
@@ -1945,4 +1974,5 @@ AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_DEFAULT, "ODBC lookups",
 	.load = load_module,
 	.unload = unload_module,
 	.reload = reload,
+	.requires = "res_odbc",
 );

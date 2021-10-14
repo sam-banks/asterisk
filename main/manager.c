@@ -100,6 +100,7 @@
 #include "asterisk/format_cache.h"
 #include "asterisk/translate.h"
 #include "asterisk/taskprocessor.h"
+#include "asterisk/message.h"
 
 /*** DOCUMENTATION
 	<manager name="Ping" language="en_US">
@@ -873,7 +874,8 @@
 	</manager>
 	<manager name="SendText" language="en_US">
 		<synopsis>
-			Send text message to channel.
+			Sends a text message to channel. A content type	can be optionally specified. If not set
+			it is set to an empty string allowing a custom handler to default it as it sees fit.
 		</synopsis>
 		<syntax>
 			<xi:include xpointer="xpointer(/docs/manager[@name='Login']/syntax/parameter[@name='ActionID'])" />
@@ -883,10 +885,16 @@
 			<parameter name="Message" required="true">
 				<para>Message to send.</para>
 			</parameter>
+			<parameter name="Content-Type" required="false" default="">
+				<para>The type of content in the message</para>
+			</parameter>
 		</syntax>
 		<description>
 			<para>Sends A Text Message to a channel while in a call.</para>
 		</description>
+		<see-also>
+			<ref type="application">SendText</ref>
+		</see-also>
 	</manager>
 	<manager name="UserEvent" language="en_US">
 		<synopsis>
@@ -1619,7 +1627,7 @@ struct mansession {
 	struct ast_iostream *stream;
 	struct ast_tcptls_session_instance *tcptls_session;
 	enum mansession_message_parsing parsing;
-	int write_error:1;
+	unsigned int write_error:1;
 	struct manager_custom_hook *hook;
 	ast_mutex_t lock;
 };
@@ -1938,12 +1946,12 @@ void ast_manager_unregister_hook(struct manager_custom_hook *hook)
 	AST_RWLIST_UNLOCK(&manager_hooks);
 }
 
-int check_manager_enabled(void)
+int ast_manager_check_enabled(void)
 {
 	return manager_enabled;
 }
 
-int check_webmanager_enabled(void)
+int ast_webmanager_check_enabled(void)
 {
 	return (webmanager_enabled && manager_enabled);
 }
@@ -2550,6 +2558,9 @@ static char *handle_showmanager(struct ast_cli_entry *e, int cmd, struct ast_cli
 		for (v = user->chanvars ; v ; v = v->next) {
 			ast_cli(a->fd, "                 %s = %s\n", v->name, v->value);
 		}
+	if (!ast_acl_list_is_empty(user->acl)) {
+		ast_acl_output(a->fd, user->acl, NULL);
+	}
 
 	AST_RWLIST_UNLOCK(&users);
 
@@ -3820,8 +3831,8 @@ static enum error_type handle_updates(struct mansession *s, const struct message
 		int allowdups = 0;
 		int istemplate = 0;
 		int ignoreerror = 0;
-		char *inherit = NULL;
-		char *catfilter = NULL;
+		RAII_VAR(char *, inherit, NULL, ast_free);
+		RAII_VAR(char *, catfilter, NULL, ast_free);
 		char *token;
 		int foundvar = 0;
 		int foundcat = 0;
@@ -3859,7 +3870,9 @@ static enum error_type handle_updates(struct mansession *s, const struct message
 		snprintf(hdr, sizeof(hdr), "Options-%06d", x);
 		options = astman_get_header(m, hdr);
 		if (!ast_strlen_zero(options)) {
-			dupoptions = ast_strdupa(options);
+			char copy[strlen(options) + 1];
+			strcpy(copy, options); /* safe */
+			dupoptions = copy;
 			while ((token = ast_strsep(&dupoptions, ',', AST_STRSEP_STRIP))) {
 				if (!strcasecmp("allowdups", token)) {
 					allowdups = 1;
@@ -3877,7 +3890,7 @@ static enum error_type handle_updates(struct mansession *s, const struct message
 					char *c = ast_strsep(&token, '=', AST_STRSEP_STRIP);
 					c = ast_strsep(&token, '=', AST_STRSEP_STRIP);
 					if (c) {
-						inherit = ast_strdupa(c);
+						inherit = ast_strdup(c);
 					}
 					continue;
 				}
@@ -3885,7 +3898,7 @@ static enum error_type handle_updates(struct mansession *s, const struct message
 					char *c = ast_strsep(&token, '=', AST_STRSEP_STRIP);
 					c = ast_strsep(&token, '=', AST_STRSEP_STRIP);
 					if (c) {
-						catfilter = ast_strdupa(c);
+						catfilter = ast_strdup(c);
 					}
 					continue;
 				}
@@ -4834,14 +4847,92 @@ static int action_status(struct mansession *s, const struct message *m)
 	return 0;
 }
 
+/*!
+ * \brief Queue a given read action containing a payload onto a channel
+ *
+ * This queues a READ_ACTION control frame that contains a given "payload", or
+ * data to be triggered and handled on the channel's read side. This ensures
+ * the "action" is handled by the channel's media reading thread.
+ *
+ * \param chan The channel to queue the action on
+ * \param payload The read action's payload
+ * \param payload_size The size of the given payload
+ * \param action The type of read action to queue
+ *
+ * \return -1 on error, 0 on success
+ */
+static int queue_read_action_payload(struct ast_channel *chan, const unsigned char *payload,
+	size_t payload_size, enum ast_frame_read_action action)
+{
+	struct ast_control_read_action_payload *obj;
+	size_t obj_size;
+	int res;
+
+	obj_size = payload_size + sizeof(*obj);
+
+	obj = ast_malloc(obj_size);
+	if (!obj) {
+		return -1;
+	}
+
+	obj->action = action;
+	obj->payload_size = payload_size;
+	memcpy(obj->payload, payload, payload_size);
+
+	res = ast_queue_control_data(chan, AST_CONTROL_READ_ACTION, obj, obj_size);
+
+	ast_free(obj);
+	return res;
+}
+
+/*!
+ * \brief Queue a read action to send a text message
+ *
+ * \param chan The channel to queue the action on
+ * \param body The body of the message
+ *
+ * \return -1 on error, 0 on success
+ */
+static int queue_sendtext(struct ast_channel *chan, const char *body)
+{
+	return queue_read_action_payload(chan, (const unsigned char *)body,
+		strlen(body) + 1, AST_FRAME_READ_ACTION_SEND_TEXT);
+}
+
+/*!
+ * \brief Queue a read action to send a text data message
+ *
+ * \param chan The channel to queue the action on
+ * \param body The body of the message
+ * \param content_type The message's content type
+ *
+ * \return -1 on error, 0 on success
+ */
+static int queue_sendtext_data(struct ast_channel *chan, const char *body,
+	const char *content_type)
+{
+	int res;
+	struct ast_msg_data *obj;
+
+	obj = ast_msg_data_alloc2(AST_MSG_DATA_SOURCE_TYPE_UNKNOWN,
+							NULL, NULL, content_type, body);
+	if (!obj) {
+		return -1;
+	}
+
+	res = queue_read_action_payload(chan, (const unsigned char *)obj,
+		ast_msg_data_get_length(obj), AST_FRAME_READ_ACTION_SEND_TEXT_DATA);
+
+	ast_free(obj);
+	return res;
+}
+
 static int action_sendtext(struct mansession *s, const struct message *m)
 {
 	struct ast_channel *c;
 	const char *name = astman_get_header(m, "Channel");
 	const char *textmsg = astman_get_header(m, "Message");
-	struct ast_control_read_action_payload *frame_payload;
-	int payload_size;
-	int frame_size;
+	const char *content_type = astman_get_header(m, "Content-Type");
 	int res;
 
 	if (ast_strlen_zero(name)) {
@@ -4860,22 +4951,13 @@ static int action_sendtext(struct mansession *s, const struct message *m)
 		return 0;
 	}
 
-	payload_size = strlen(textmsg) + 1;
-	frame_size = payload_size + sizeof(*frame_payload);
+	/*
+	 * If the "extra" data is not available, then send using "string" only.
+	 * Doing such maintains backward compatibilities.
+	 */
+	res = ast_strlen_zero(content_type) ? queue_sendtext(c, textmsg) :
+		queue_sendtext_data(c, textmsg, content_type);
 
-	frame_payload = ast_malloc(frame_size);
-	if (!frame_payload) {
-		ast_channel_unref(c);
-		astman_send_error(s, m, "Failure");
-		return 0;
-	}
-
-	frame_payload->action = AST_FRAME_READ_ACTION_SEND_TEXT;
-	frame_payload->payload_size = payload_size;
-	memcpy(frame_payload->payload, textmsg, payload_size);
-	res = ast_queue_control_data(c, AST_CONTROL_READ_ACTION, frame_payload, frame_size);
-
-	ast_free(frame_payload);
 	ast_channel_unref(c);
 
 	if (res >= 0) {
@@ -5742,6 +5824,7 @@ static int action_originate(struct mansession *s, const struct message *m)
 				                                     EAGI(/bin/rm,-rf /)       */
 				strcasestr(app, "mixmonitor") ||  /* MixMonitor(blah,,rm -rf)  */
 				strcasestr(app, "externalivr") || /* ExternalIVR(rm -rf)       */
+				strcasestr(app, "originate") ||   /* Originate(Local/1234,app,System,rm -rf) */
 				(strstr(appdata, "SHELL") && (bad_appdata = 1)) ||       /* NoOp(${SHELL(rm -rf /)})  */
 				(strstr(appdata, "EVAL") && (bad_appdata = 1))           /* NoOp(${EVAL(${some_var_containing_SHELL})}) */
 				)) {
@@ -6226,7 +6309,7 @@ static int action_coresettings(struct mansession *s, const struct message *m)
 			ast_option_maxfiles,
 			AST_CLI_YESNO(ast_realtime_enabled()),
 			AST_CLI_YESNO(ast_cdr_is_enabled()),
-			AST_CLI_YESNO(check_webmanager_enabled())
+			AST_CLI_YESNO(ast_webmanager_check_enabled())
 			);
 	return 0;
 }

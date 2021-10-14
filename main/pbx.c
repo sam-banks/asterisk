@@ -3148,10 +3148,15 @@ static int internal_extension_state_extended(struct ast_channel *c, const char *
 	}
 
 	if (e->exten[0] == '_') {
-		/* Create this hint on-the-fly */
+		/* Create this hint on-the-fly, we explicitly lock hints here to ensure the
+		 * same locking order as if this were done through configuration file - that is
+		 * hints is locked first and then (if needed) contexts is locked
+		 */
+		ao2_lock(hints);
 		ast_add_extension(e->parent->name, 0, exten, e->priority, e->label,
 			e->matchcid ? e->cidmatch : NULL, e->app, ast_strdup(e->data), ast_free_ptr,
 			e->registrar);
+		ao2_unlock(hints);
 		if (!(e = ast_hint_extension(c, context, exten))) {
 			/* Improbable, but not impossible */
 			return -1;
@@ -3228,9 +3233,11 @@ int ast_hint_presence_state(struct ast_channel *c, const char *context, const ch
 
 	if (e->exten[0] == '_') {
 		/* Create this hint on-the-fly */
+		ao2_lock(hints);
 		ast_add_extension(e->parent->name, 0, exten, e->priority, e->label,
 			e->matchcid ? e->cidmatch : NULL, e->app, ast_strdup(e->data), ast_free_ptr,
 			e->registrar);
+		ao2_unlock(hints);
 		if (!(e = ast_hint_extension(c, context, exten))) {
 			/* Improbable, but not impossible */
 			return -1;
@@ -3766,9 +3773,11 @@ static int extension_state_add_destroy(const char *context, const char *exten,
 	 * individual extension, because the pattern will no longer match first.
 	 */
 	if (e->exten[0] == '_') {
+		ao2_lock(hints);
 		ast_add_extension(e->parent->name, 0, exten, e->priority, e->label,
 			e->matchcid ? e->cidmatch : NULL, e->app, ast_strdup(e->data), ast_free_ptr,
 			e->registrar);
+		ao2_unlock(hints);
 		e = ast_hint_extension(NULL, context, exten);
 		if (!e || e->exten[0] == '_') {
 			return -1;
@@ -4614,7 +4623,6 @@ static int increase_call_count(const struct ast_channel *c)
 	int failed = 0;
 	double curloadavg;
 #if defined(HAVE_SYSINFO)
-	long curfreemem;
 	struct sysinfo sys_info;
 #endif
 
@@ -4634,13 +4642,16 @@ static int increase_call_count(const struct ast_channel *c)
 	}
 #if defined(HAVE_SYSINFO)
 	if (option_minmemfree) {
+		/* Make sure that the free system memory is above the configured low watermark */
 		if (!sysinfo(&sys_info)) {
-			/* make sure that the free system memory is above the configured low watermark
-			 * convert the amount of freeram from mem_units to MB */
-			curfreemem = sys_info.freeram * sys_info.mem_unit;
+			/* Convert the amount of available RAM from mem_units to MB. The calculation
+			 * was done this way to avoid overflow problems */
+			uint64_t curfreemem = sys_info.freeram + sys_info.bufferram;
+			curfreemem *= sys_info.mem_unit;
 			curfreemem /= 1024 * 1024;
 			if (curfreemem < option_minmemfree) {
-				ast_log(LOG_WARNING, "Available system memory (~%ldMB) is below the configured low watermark (%ldMB)\n", curfreemem, option_minmemfree);
+				ast_log(LOG_WARNING, "Available system memory (~%" PRIu64 "MB) is below the configured low watermark (%ldMB)\n",
+					curfreemem, option_minmemfree);
 				failed = -1;
 			}
 		}
@@ -6517,6 +6528,8 @@ void ast_merge_contexts_and_delete(struct ast_context **extcontexts, struct ast_
 	i = ao2_iterator_init(hints, AO2_ITERATOR_DONTLOCK);
 	for (; (hint = ao2_iterator_next(&i)); ao2_ref(hint, -1)) {
 		if (ao2_container_count(hint->callbacks)) {
+			size_t exten_len;
+
 			ao2_lock(hint);
 			if (!hint->exten) {
 				/* The extension has already been destroyed. (Should never happen here) */
@@ -6524,7 +6537,8 @@ void ast_merge_contexts_and_delete(struct ast_context **extcontexts, struct ast_
 				continue;
 			}
 
-			length = strlen(hint->exten->exten) + strlen(hint->exten->parent->name) + 2
+			exten_len = strlen(hint->exten->exten) + 1;
+			length = exten_len + strlen(hint->exten->parent->name) + 1
 				+ sizeof(*saved_hint);
 			if (!(saved_hint = ast_calloc(1, length))) {
 				ao2_unlock(hint);
@@ -6544,7 +6558,7 @@ void ast_merge_contexts_and_delete(struct ast_context **extcontexts, struct ast_
 			saved_hint->context = saved_hint->data;
 			strcpy(saved_hint->data, hint->exten->parent->name);
 			saved_hint->exten = saved_hint->data + strlen(saved_hint->context) + 1;
-			strcpy(saved_hint->exten, hint->exten->exten);
+			ast_copy_string(saved_hint->exten, hint->exten->exten, exten_len);
 			if (hint->last_presence_subtype) {
 				saved_hint->last_presence_subtype = ast_strdup(hint->last_presence_subtype);
 			}
@@ -7332,6 +7346,10 @@ static int ast_add_extension2_lockopt(struct ast_context *con,
 	if (ast_strlen_zero(extension)) {
 		ast_log(LOG_ERROR,"You have to be kidding-- add exten '' to context %s? Figure out a name and call me back. Action ignored.\n",
 				con->name);
+		/* We always need to deallocate 'data' on failure */
+		if (datad) {
+			datad(data);
+		}
 		return -1;
 	}
 
@@ -7387,8 +7405,14 @@ static int ast_add_extension2_lockopt(struct ast_context *con,
 	}
 
 	/* Be optimistic:  Build the extension structure first */
-	if (!(tmp = ast_calloc(1, length)))
+	tmp = ast_calloc(1, length);
+	if (!tmp) {
+		/* We always need to deallocate 'data' on failure */
+		if (datad) {
+			datad(data);
+		}
 		return -1;
+	}
 
 	if (ast_strlen_zero(label)) /* let's turn empty labels to a null ptr */
 		label = 0;
@@ -8251,7 +8275,7 @@ void wait_for_hangup(struct ast_channel *chan, const void *data)
 		waitsec = -1;
 	if (waitsec > -1) {
 		waittime = waitsec * 1000.0;
-		ast_safe_sleep(chan, waittime);
+		ast_safe_sleep_without_silence(chan, waittime);
 	} else do {
 		res = ast_waitfor(chan, -1);
 		if (res < 0)

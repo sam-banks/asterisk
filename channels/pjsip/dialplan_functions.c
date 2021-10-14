@@ -1235,7 +1235,7 @@ static int media_offer_read_av(struct ast_sip_session *session, char *buf,
 	struct ast_stream_topology *topology;
 	int idx;
 	struct ast_stream *stream = NULL;
-	struct ast_format_cap *caps;
+	const struct ast_format_cap *caps;
 	size_t accum = 0;
 
 	if (session->inv_session->dlg->state == PJSIP_DIALOG_STATE_ESTABLISHED) {
@@ -1352,9 +1352,19 @@ static int media_offer_write_av(void *obj)
 	if (!stream) {
 		return 0;
 	}
-	caps = ast_stream_get_formats(stream);
+
+	caps = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT);
+	if (!caps) {
+		return -1;
+	}
+
+	ast_format_cap_append_from_cap(caps, ast_stream_get_formats(stream),
+		AST_MEDIA_TYPE_UNKNOWN);
 	ast_format_cap_remove_by_type(caps, data->media_type);
 	ast_format_cap_update_by_allow_disallow(caps, data->value, 1);
+	ast_stream_set_formats(stream, caps);
+	ast_stream_set_metadata(stream, "pjsip_session_refresh", "force");
+	ao2_ref(caps, -1);
 
 	return 0;
 }
@@ -1667,6 +1677,11 @@ int pjsip_acf_session_refresh_write(struct ast_channel *chan, const char *cmd, c
 
 	if (!chan) {
 		ast_log(LOG_WARNING, "No channel was provided to %s function.\n", cmd);
+		return -1;
+	}
+
+	if (ast_channel_state(chan) != AST_STATE_UP) {
+		ast_log(LOG_WARNING, "'%s' not allowed on unanswered channel '%s'.\n", cmd, ast_channel_name(chan));
 		return -1;
 	}
 

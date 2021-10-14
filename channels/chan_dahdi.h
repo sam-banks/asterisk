@@ -182,6 +182,22 @@ struct dahdi_pvt {
 	 */
 	unsigned int answeronpolarityswitch:1;
 	/*!
+	 * \brief INTEGER, number of ANI INFO digits on a CAMA trunk.
+	 * older switches use 1 INFO digit, newer switches use 2 INFO digits
+	 * \note Set from the "ani_info_digits" value read in from chan_dahdi.conf
+	 */
+	unsigned int ani_info_digits:8;
+	/*!
+	 * \brief INTEGER, length of ANI failure timeout in ms.
+	 * \note Set from the "ani_timeout" value read in from chan_dahdi.conf
+	 */
+	unsigned int ani_timeout:16;
+	/*!
+	 * \brief INTEGER, length of time to wait before sending ANI wink in ms.
+	 * \note Set from the "ani_wink_time" value read in from chan_dahdi.conf
+	 */
+	unsigned int ani_wink_time:16;
+	/*!
 	 * \brief TRUE if busy detection is enabled.
 	 * (Listens for the beep-beep busy pattern.)
 	 * \note Set from the "busydetect" value read in from chan_dahdi.conf
@@ -692,15 +708,15 @@ struct dahdi_pvt {
 	openr2_calling_party_category_t mfcr2_category;
 	int mfcr2_dnis_index;
 	int mfcr2_ani_index;
-	int mfcr2call:1;
-	int mfcr2_answer_pending:1;
-	int mfcr2_charge_calls:1;
-	int mfcr2_allow_collect_calls:1;
-	int mfcr2_forced_release:1;
-	int mfcr2_dnis_matched:1;
-	int mfcr2_call_accepted:1;
-	int mfcr2_accept_on_offer:1;
-	int mfcr2_progress_sent:1;
+	unsigned int mfcr2call:1;
+	unsigned int mfcr2_answer_pending:1;
+	unsigned int mfcr2_charge_calls:1;
+	unsigned int mfcr2_allow_collect_calls:1;
+	unsigned int mfcr2_forced_release:1;
+	unsigned int mfcr2_dnis_matched:1;
+	unsigned int mfcr2_call_accepted:1;
+	unsigned int mfcr2_accept_on_offer:1;
+	unsigned int mfcr2_progress_sent:1;
 #endif	/* defined(HAVE_OPENR2) */
 	/*! \brief DTMF digit in progress.  0 when no digit in progress. */
 	char begindigit;

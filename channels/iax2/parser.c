@@ -52,7 +52,11 @@ static int frames = 0;
 static int iframes = 0;
 static int oframes = 0;
 
-#if !defined(LOW_MEMORY)
+#if (defined(LOW_MEMORY) || defined(MALLOC_DEBUG)) && !defined(NO_FRAME_CACHE)
+#define NO_FRAME_CACHE
+#endif
+
+#if !defined(NO_FRAME_CACHE)
 static void frame_cache_cleanup(void *data);
 
 /*! \brief A per-thread cache of iax_frame structures */
@@ -309,6 +313,7 @@ static struct iax2_ie infoelts[] = {
 	{ IAX_IE_CALLINGPRES, "CALLING PRESNTN", dump_byte },
 	{ IAX_IE_CALLINGTON, "CALLING TYPEOFNUM", dump_byte },
 	{ IAX_IE_CALLINGTNS, "CALLING TRANSITNET", dump_short },
+	{ IAX_IE_CALLINGANI2, "CALLING ANI2", dump_int },
 	{ IAX_IE_SAMPLINGRATE, "SAMPLINGRATE", dump_samprate },
 	{ IAX_IE_CAUSECODE, "CAUSE CODE", dump_byte },
 	{ IAX_IE_ENCRYPTION, "ENCRYPTION", dump_short },
@@ -801,6 +806,7 @@ int iax_parse_ies(struct iax_ies *ies, unsigned char *data, int datalen)
 	ies->calling_ton = -1;
 	ies->calling_tns = -1;
 	ies->calling_pres = -1;
+	ies->calling_ani2 = -1;
 	ies->samprate = IAX_RATE_8KHZ;
 	while(datalen >= 2) {
 		ie = data[0];
@@ -1053,6 +1059,14 @@ int iax_parse_ies(struct iax_ies *ies, unsigned char *data, int datalen)
 				errorf(tmp);
 			}
 			break;
+		case IAX_IE_CALLINGANI2:
+			if (len == (int)sizeof(unsigned int)) {
+				ies->calling_ani2 = ntohl(get_unaligned_uint32(data + 2));
+			} else {
+				snprintf(tmp, (int)sizeof(tmp), "callingani2 was %d long: %s\n", len, data + 2);
+				errorf(tmp);
+			}
+			break;
 		case IAX_IE_CALLINGTNS:
 			if (len != (int)sizeof(unsigned short)) {
 				snprintf(tmp, (int)sizeof(tmp), "Expecting callingtns to be %d bytes long but was %d\n", (int)sizeof(unsigned short), len);
@@ -1215,7 +1229,7 @@ struct iax_frame *iax_frame_new(int direction, int datalen, unsigned int cacheab
 {
 	struct iax_frame *fr;
 
-#if !defined(LOW_MEMORY)
+#if !defined(NO_FRAME_CACHE)
 	if (cacheable) {
 		struct iax_frames *iax_frames;
 		struct iax_frame *smallest;
@@ -1243,13 +1257,13 @@ struct iax_frame *iax_frame_new(int direction, int datalen, unsigned int cacheab
 					iax_frames->size--;
 					ast_free(smallest);
 				}
-				if (!(fr = ast_calloc_cache(1, sizeof(*fr) + datalen))) {
+				if (!(fr = ast_calloc(1, sizeof(*fr) + datalen))) {
 					return NULL;
 				}
 				fr->afdatalen = datalen;
 			}
 		} else {
-			if (!(fr = ast_calloc_cache(1, sizeof(*fr) + datalen))) {
+			if (!(fr = ast_calloc(1, sizeof(*fr) + datalen))) {
 				return NULL;
 			}
 			fr->afdatalen = datalen;
@@ -1280,7 +1294,7 @@ struct iax_frame *iax_frame_new(int direction, int datalen, unsigned int cacheab
 
 void iax_frame_free(struct iax_frame *fr)
 {
-#if !defined(LOW_MEMORY)
+#if !defined(NO_FRAME_CACHE)
 	struct iax_frames *iax_frames = NULL;
 #endif
 
@@ -1295,7 +1309,7 @@ void iax_frame_free(struct iax_frame *fr)
 	}
 	ast_atomic_fetchadd_int(&frames, -1);
 
-#if !defined(LOW_MEMORY)
+#if !defined(NO_FRAME_CACHE)
 	if (!fr->cacheable
 		|| !ast_opt_cache_media_frames
 		|| !(iax_frames = ast_threadstorage_get(&frame_cache, sizeof(*iax_frames)))) {
@@ -1319,7 +1333,7 @@ void iax_frame_free(struct iax_frame *fr)
 	ast_free(fr);
 }
 
-#if !defined(LOW_MEMORY)
+#if !defined(NO_FRAME_CACHE)
 static void frame_cache_cleanup(void *data)
 {
 	struct iax_frames *framelist = data;

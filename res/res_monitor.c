@@ -25,8 +25,11 @@
 
 /*** MODULEINFO
 	<use type="module">func_periodic_hook</use>
+	<defaultenabled>no</defaultenabled>
 	<support_level>deprecated</support_level>
 	<replacement>app_mixmonitor</replacement>
+	<deprecated_in>16</deprecated_in>
+	<removed_in>21</removed_in>
  ***/
 
 #include "asterisk.h"

@@ -215,6 +215,12 @@ typedef unsigned long long ast_group_t;
 
 struct ast_stream_topology;
 
+/*!
+ * \brief Set as the change source reason when a channel stream topology has
+ *        been changed externally as a result of the remote side renegotiating.
+ */
+static const char ast_stream_topology_changed_external[] = "external";
+
 /*! \todo Add an explanation of an Asterisk generator
 */
 struct ast_generator {
@@ -702,6 +708,19 @@ struct ast_channel_tech {
 	int (* const answer)(struct ast_channel *chan);
 
 	/*!
+	 * \brief Answer the channel with topology
+	 * \since 18.0.0
+	 *
+	 * \param chan The channel to answer
+	 * \param topology The topology to use, probably the peer's.
+	 *
+	 * \note The topology may be NULL when the peer doesn't support streams
+	 * or, in the case where transcoding is in effect, when this channel should use
+	 * its existing topology.
+	 */
+	int (* const answer_with_stream_topology)(struct ast_channel *chan, struct ast_stream_topology *topology);
+
+	/*!
 	 * \brief Read a frame (or chain of frames from the same stream), in standard format (see frame.h)
 	 *
 	 * \param chan channel to read frames from
@@ -1075,6 +1094,10 @@ struct ast_bridge_config {
 	 * exist when the end_bridge_callback is called, then it needs to be fixed up properly
 	 */
 	void (*end_bridge_callback_data_fixup)(struct ast_bridge_config *bconfig, struct ast_channel *originator, struct ast_channel *terminator);
+	/*! If the bridge answers the channel this topology should be passed to the channel
+	 * and used if the channel supports the answer_with_stream_topology callback.
+	 */
+	struct ast_stream_topology *answer_topology;
 };
 
 struct chanmon;
@@ -1371,6 +1394,17 @@ int ast_queue_control(struct ast_channel *chan, enum ast_control_frame_type cont
  */
 int ast_queue_control_data(struct ast_channel *chan, enum ast_control_frame_type control,
 			   const void *data, size_t datalen);
+
+/*!
+ * \brief Queue an ANSWER control frame with topology
+ *
+ * \param chan channel to queue frame onto
+ * \param topology topology to be passed through the core to the peer channel
+ *
+ * \retval 0 success
+ * \retval non-zero failure
+ */
+int ast_queue_answer(struct ast_channel *chan, const struct ast_stream_topology *topology);
 
 /*!
  * \brief Change channel name
@@ -1796,6 +1830,31 @@ int ast_auto_answer(struct ast_channel *chan);
 int ast_raw_answer(struct ast_channel *chan);
 
 /*!
+ * \brief Answer a channel passing in a stream topology
+ * \since 18.0.0
+ *
+ * \param chan channel to answer
+ * \param topology the peer's stream topology
+ *
+ * This function answers a channel and handles all necessary call
+ * setup functions.
+ *
+ * \note The channel passed does not need to be locked, but is locked
+ * by the function when needed.
+ *
+ * \note Unlike ast_answer(), this function will not wait for media
+ * flow to begin. The caller should be careful before sending media
+ * to the channel before incoming media arrives, as the outgoing
+ * media may be lost.
+ *
+ * \note The topology is usually that of the peer channel and may be NULL.
+ *
+ * \retval 0 on success
+ * \retval non-zero on failure
+ */
+int ast_raw_answer_with_stream_topology(struct ast_channel *chan, struct ast_stream_topology *topology);
+
+/*!
  * \brief Answer a channel, with a selectable delay before returning
  *
  * \param chan channel to answer
@@ -1909,6 +1968,17 @@ int ast_is_deferrable_frame(const struct ast_frame *frame);
  * \return returns -1 on hangup, otherwise 0.
  */
 int ast_safe_sleep(struct ast_channel *chan, int ms);
+
+/*!
+ * \brief Wait for a specified amount of time, looking for hangups, and do not generate silence
+ * \param chan channel to wait for
+ * \param ms length of time in milliseconds to sleep. This should never be less than zero.
+ * \details
+ * Waits for a specified amount of time, servicing the channel as required.
+ * \return returns -1 on hangup, otherwise 0.
+ * \note Unlike ast_safe_sleep this will not generate silence if Asterisk is configured to do so.
+ */
+int ast_safe_sleep_without_silence(struct ast_channel *chan, int ms);
 
 /*!
  * \brief Wait for a specified amount of time, looking for hangups and a condition argument
@@ -2580,6 +2650,18 @@ int ast_settimeout_full(struct ast_channel *c, unsigned int rate, int (*func)(co
  * \param dest destination extension for transfer
  */
 int ast_transfer(struct ast_channel *chan, char *dest);
+
+/*!
+ * \brief Transfer a channel (if supported) receieve protocol result.
+ * \retval -1 on error
+ * \retval 0 if not supported
+ * \retval 1 if supported and requested
+ * \param chan current channel
+ * \param dest destination extension for transfer
+ * \param protocol specific error code in case of failure
+ * Example, sip 0 success, else sip error code
+ */
+int ast_transfer_protocol(struct ast_channel *chan, char *dest, int *protocol);
 
 /*!
  * \brief Inherits channel variable from parent to child channel
@@ -5026,6 +5108,20 @@ int ast_channel_request_stream_topology_change(struct ast_channel *chan,
 int ast_channel_stream_topology_changed(struct ast_channel *chan, struct ast_stream_topology *topology);
 
 /*!
+ * \brief Provide notice from a channel that the topology has changed on it as a result
+ *        of the remote party renegotiating.
+ *
+ * \param chan The channel to provide notice from
+ *
+ * \retval 0 success
+ * \retval -1 failure
+ *
+ * \note This interface is provided for channels to provide notice that a topology change
+ *       has occurred as a result of a remote party renegotiating the stream topology.
+ */
+int ast_channel_stream_topology_changed_externally(struct ast_channel *chan);
+
+/*!
  * \brief Retrieve the source that initiated the last stream topology change
  *
  * \param chan The channel
@@ -5033,5 +5129,19 @@ int ast_channel_stream_topology_changed(struct ast_channel *chan, struct ast_str
  * \retval The channel's stream topology change source
  */
 void *ast_channel_get_stream_topology_change_source(struct ast_channel *chan);
+
+/*!
+ * \brief Checks if a channel's technology implements a particular callback function
+ * \since 18.0.0
+ *
+ * \param chan The channel
+ * \param function The function to look for
+ *
+ * \retval 1 if the channel has a technology set and it implements the function
+ * \retval 0 if the channel doesn't have a technology set or it doesn't implement the function
+ */
+#define ast_channel_has_tech_function(chan, function) \
+	(ast_channel_tech(chan) ? ast_channel_tech(chan)->function != NULL : 0)
+
 
 #endif /* _ASTERISK_CHANNEL_H */

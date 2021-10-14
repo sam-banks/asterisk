@@ -135,7 +135,7 @@ if [ $NO_MENUSELECT -eq 0 ] ; then
 	fi
 	runner menuselect/menuselect `gen_cats enable $cat_enables` menuselect.makeopts
 
-	mod_disables="res_digium_phone chan_vpb"
+	mod_disables="res_digium_phone"
 	if [ $TESTED_ONLY -eq 1 ] ; then
 		# These modules are not tested at all.  They are loaded but nothing is ever done
 		# with them, no testsuite tests depend on them.
@@ -145,7 +145,7 @@ if [ $NO_MENUSELECT -eq 0 ] ; then
 		mod_disables+=" app_readexten app_sms app_speech_utils app_test app_url app_waitforring"
 		mod_disables+=" app_waitforsilence app_waituntil app_zapateller"
 		mod_disables+=" cdr_adaptive_odbc cdr_custom cdr_manager cdr_odbc cdr_pgsql cdr_radius"
-		mod_disables+=" cdr_syslog cdr_tds"
+		mod_disables+=" cdr_tds"
 		mod_disables+=" cel_odbc cel_pgsql cel_radius cel_sqlite3_custom cel_tds"
 		mod_disables+=" chan_alsa chan_console chan_mgcp chan_motif chan_oss chan_rtp chan_skinny chan_unistim"
 		mod_disables+=" func_frame_trace func_pitchshift func_speex func_volume func_dialgroup"
@@ -158,14 +158,14 @@ if [ $NO_MENUSELECT -eq 0 ] ; then
 
 	runner menuselect/menuselect `gen_mods disable $mod_disables` menuselect.makeopts
 
-	mod_enables="app_voicemail app_directory FILE_STORAGE"
+	mod_enables="app_voicemail app_directory"
 	mod_enables+=" res_mwi_external res_ari_mailboxes res_mwi_external_ami res_stasis_mailbox"
 	mod_enables+=" CORE-SOUNDS-EN-GSM MOH-OPSOUND-GSM EXTRA-SOUNDS-EN-GSM"
 	runner menuselect/menuselect `gen_mods enable $mod_enables` menuselect.makeopts
 fi
 
 if [ $NO_MAKE -eq 0 ] ; then
-	runner ${MAKE} -j8 || runner ${MAKE} -j1 NOISY_BUILD=yes
+runner ${MAKE} -j8 full || runner ${MAKE} -j1 NOISY_BUILD=yes full
 fi
 
 runner rm -f ${LCOV_DIR}/*.info

@@ -475,7 +475,6 @@ static int add_extension(struct ast_context *context, const char *exten,
 
 	if (ast_add_extension2_nolock(context, 0, exten, priority, NULL, NULL,
 			app, data, free_ptr, BASE_REGISTRAR, NULL, 0)) {
-		ast_free(data);
 		return -1;
 	}
 
@@ -765,18 +764,8 @@ static int handle_identify(const struct ast_sorcery *sorcery, struct object_type
 
 	if (!ast_variable_find_last_in_list(vars, "match")) {
 		for (host_counter = 0; host_counter < host_count; host_counter++) {
-			char *rhost = AST_VECTOR_GET(remote_hosts_vector, host_counter);
-			char host[strlen(rhost) + 1];
-			char *colon;
-
-			/* If there's a :port specified, we have to remove it. */
-			strcpy(host, rhost); /* Safe */
-			colon = strchr(host, ':');
-			if (colon) {
-				*colon = '\0';
-			}
-
-			variable_list_append_return(&vars, "match", host);
+			variable_list_append_return(&vars, "match",
+				AST_VECTOR_GET(remote_hosts_vector, host_counter));
 		}
 	}
 
@@ -1101,18 +1090,17 @@ static void object_type_loaded_observer(const char *name,
 	while ((category = ast_category_browse_filtered(cfg, NULL, category, "type=^wizard$"))) {
 		const char *id = ast_category_get_name(category);
 		struct ast_category *last_cat = NULL;
-		struct ast_variable *change_set = NULL;
+		int changes = 0;
 
 		if (otw->last_config) {
 			last_cat = ast_category_get(otw->last_config, id, "type=^wizard$");
-			ast_sorcery_changeset_create(ast_category_first(category), ast_category_first(last_cat), &change_set);
+			changes = !ast_variable_lists_match(ast_category_first(category), ast_category_first(last_cat), 1);
 			if (last_cat) {
 				ast_category_delete(otw->last_config, last_cat);
 			}
 		}
 
-		if (!last_cat || change_set) {
-			ast_variables_destroy(change_set);
+		if (!last_cat || changes) {
 			ast_debug(3, "%s: %s(s) for wizard '%s'\n", reloaded ? "Reload" : "Load", object_type, id);
 			if (wizard_apply_handler(sorcery, otw, category)) {
 				ast_log(LOG_ERROR, "Unable to create objects for wizard '%s'\n", id);

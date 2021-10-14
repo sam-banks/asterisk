@@ -457,6 +457,7 @@ static struct ast_codec g729a = {
 	.samples_count = g729_samples,
 	.get_length = g729_length,
 	.smooth = 1,
+	.smoother_flags = AST_SMOOTHER_FLAG_G729,
 };
 
 static unsigned char get_n_bits_at(unsigned char *data, int n, int bit)
@@ -700,20 +701,6 @@ static struct ast_codec siren14 = {
 	.minimum_bytes = 120,
 	.samples_count = siren14_samples,
 	.get_length = siren14_length,
-};
-
-static struct ast_codec testlaw = {
-	.name = "testlaw",
-	.description = "G.711 test-law",
-	.type = AST_MEDIA_TYPE_AUDIO,
-	.sample_rate = 8000,
-	.minimum_ms = 10,
-	.maximum_ms = 150,
-	.default_ms = 20,
-	.minimum_bytes = 80,
-	.samples_count = ulaw_samples,
-	.get_length = ulaw_length,
-	.smooth = 1,
 };
 
 static int g719_samples(struct ast_frame *frame)
@@ -969,7 +956,6 @@ int ast_codec_builtin_init(void)
 	res |= CODEC_REGISTER_AND_CACHE(g722);
 	res |= CODEC_REGISTER_AND_CACHE(siren7);
 	res |= CODEC_REGISTER_AND_CACHE(siren14);
-	res |= CODEC_REGISTER_AND_CACHE(testlaw);
 	res |= CODEC_REGISTER_AND_CACHE(g719);
 	res |= CODEC_REGISTER_AND_CACHE(opus);
 	res |= CODEC_REGISTER_AND_CACHE(jpeg);

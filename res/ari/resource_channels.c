@@ -1077,7 +1077,7 @@ static struct ast_channel *ari_channels_handle_originate_with_id(const char *arg
 	struct ast_ari_response *response)
 {
 	char *dialtech;
-	char dialdevice[AST_CHANNEL_NAME];
+	char *dialdevice = NULL;
 	struct ast_dial *dial;
 	char *caller_id = NULL;
 	char *cid_num = NULL;
@@ -1116,7 +1116,7 @@ static struct ast_channel *ari_channels_handle_originate_with_id(const char *arg
 	dialtech = ast_strdupa(args_endpoint);
 	if ((stuff = strchr(dialtech, '/'))) {
 		*stuff++ = '\0';
-		ast_copy_string(dialdevice, stuff, sizeof(dialdevice));
+		dialdevice = stuff;
 	}
 
 	if (ast_strlen_zero(dialtech) || ast_strlen_zero(dialdevice)) {
@@ -1779,19 +1779,32 @@ void ast_ari_channels_create(struct ast_variable *headers,
 	struct ast_ari_channels_create_args *args,
 	struct ast_ari_response *response)
 {
-	struct ast_assigned_ids assignedids = {
-		.uniqueid = args->channel_id,
-		.uniqueid2 = args->other_channel_id,
-	};
+	struct ast_variable *variables = NULL;
+	struct ast_assigned_ids assignedids;
 	struct ari_channel_thread_data *chan_data;
 	struct ast_channel_snapshot *snapshot;
 	pthread_t thread;
 	char *dialtech;
-	char dialdevice[AST_CHANNEL_NAME];
+	char *dialdevice = NULL;
 	char *stuff;
 	int cause;
 	struct ast_format_cap *request_cap;
 	struct ast_channel *originator;
+
+	/* Parse any query parameters out of the body parameter */
+	if (args->variables) {
+		struct ast_json *json_variables;
+
+		ast_ari_channels_create_parse_body(args->variables, args);
+		json_variables = ast_json_object_get(args->variables, "variables");
+		if (json_variables
+			&& json_to_ast_variables(response, json_variables, &variables)) {
+			return;
+		}
+	}
+
+	assignedids.uniqueid = args->channel_id;
+	assignedids.uniqueid2 = args->other_channel_id;
 
 	if (!ast_strlen_zero(args->originator) && !ast_strlen_zero(args->formats)) {
 		ast_ari_response_error(response, 400, "Bad Request",
@@ -1826,7 +1839,14 @@ void ast_ari_channels_create(struct ast_variable *headers,
 	dialtech = ast_strdupa(args->endpoint);
 	if ((stuff = strchr(dialtech, '/'))) {
 		*stuff++ = '\0';
-		ast_copy_string(dialdevice, stuff, sizeof(dialdevice));
+		dialdevice = stuff;
+	}
+
+	if (ast_strlen_zero(dialtech) || ast_strlen_zero(dialdevice)) {
+		ast_ari_response_error(response, 400, "Bad Request",
+			"Invalid endpoint specified");
+		chan_data_destroy(chan_data);
+		return;
 	}
 
 	originator = ast_channel_get_by_name(args->originator);
@@ -1890,6 +1910,10 @@ void ast_ari_channels_create(struct ast_variable *headers,
 
 	if (!ast_strlen_zero(args->app)) {
 		stasis_app_subscribe_channel(args->app, chan_data->chan);
+	}
+
+	if (variables) {
+		ast_set_variables(chan_data->chan, variables);
 	}
 
 	ast_channel_cleanup(originator);
@@ -2064,7 +2088,6 @@ static void external_media_rtp_udp(struct ast_ari_channels_external_media_args *
 	size_t endpoint_len;
 	char *endpoint;
 	struct ast_channel *chan;
-	struct ast_json *json_chan;
 	struct varshead *vars;
 
 	endpoint_len = strlen("UnicastRTP/") + strlen(args->external_host) + 1;
@@ -2078,7 +2101,7 @@ static void external_media_rtp_udp(struct ast_ari_channels_external_media_args *
 		0,
 		NULL,
 		args->app,
-		NULL,
+		args->data,
 		NULL,
 		0,
 		variables,
@@ -2093,43 +2116,60 @@ static void external_media_rtp_udp(struct ast_ari_channels_external_media_args *
 		return;
 	}
 
-	/*
-	 * At this point, response->message contains a channel object so we
-	 * need to save it then create a new ExternalMedia object and put the
-	 * channel in it.
-	 */
-	json_chan = response->message;
-	response->message = ast_json_object_create();
-	if (!response->message) {
-		ast_channel_unref(chan);
-		ast_json_unref(json_chan);
-		ast_ari_response_alloc_failed(response);
-		return;
-	}
-
-	ast_json_object_set(response->message, "channel", json_chan);
-	/*
-	 * At the time the channel snapshot was taken the channel variables might
-	 * not have been set so we try to grab them directly from the channel.
-	 */
 	ast_channel_lock(chan);
 	vars = ast_channel_varshead(chan);
 	if (vars && !AST_LIST_EMPTY(vars)) {
-		struct ast_var_t *variables;
+		ast_json_object_set(response->message, "channelvars", ast_json_channel_vars(vars));
+	}
+	ast_channel_unlock(chan);
+	ast_channel_unref(chan);
+}
 
-		/* Put them all on the channel object */
-		ast_json_object_set(json_chan, "channelvars", ast_json_channel_vars(vars));
-		/* Grab out the local address and port */
-		AST_LIST_TRAVERSE(vars, variables, entries) {
-			if (!strcmp("UNICASTRTP_LOCAL_ADDRESS", ast_var_name(variables))) {
-				ast_json_object_set(response->message, "local_address",
-					ast_json_string_create(ast_var_value(variables)));
-			}
-			else if (!strcmp("UNICASTRTP_LOCAL_PORT", ast_var_name(variables))) {
-				ast_json_object_set(response->message, "local_port",
-					ast_json_integer_create(strtol(ast_var_value(variables), NULL, 10)));
-			}
-		}
+static void external_media_audiosocket_tcp(struct ast_ari_channels_external_media_args *args,
+	struct ast_variable *variables,
+	struct ast_ari_response *response)
+{
+	size_t endpoint_len;
+	char *endpoint;
+	struct ast_channel *chan;
+	struct varshead *vars;
+
+	if (ast_strlen_zero(args->data)) {
+		ast_ari_response_error(response, 400, "Bad Request", "data can not be empty");
+		return;
+	}
+
+	endpoint_len = strlen("AudioSocket/") + strlen(args->external_host) + 1 + strlen(args->data) + 1;
+	endpoint = ast_alloca(endpoint_len);
+	/* The UUID is stored in the arbitrary data field */
+	snprintf(endpoint, endpoint_len, "AudioSocket/%s/%s", args->external_host, args->data);
+
+	chan = ari_channels_handle_originate_with_id(
+		endpoint,
+		NULL,
+		NULL,
+		0,
+		NULL,
+		args->app,
+		args->data,
+		NULL,
+		0,
+		variables,
+		args->channel_id,
+		NULL,
+		NULL,
+		args->format,
+		response);
+	ast_variables_destroy(variables);
+
+	if (!chan) {
+		return;
+	}
+
+	ast_channel_lock(chan);
+	vars = ast_channel_varshead(chan);
+	if (vars && !AST_LIST_EMPTY(vars)) {
+		ast_json_object_set(response->message, "channelvars", ast_json_channel_vars(vars));
 	}
 	ast_channel_unlock(chan);
 	ast_channel_unref(chan);
@@ -2147,6 +2187,18 @@ void ast_ari_channels_external_media(struct ast_variable *headers,
 	char *port = NULL;
 
 	ast_assert(response != NULL);
+
+	/* Parse any query parameters out of the body parameter */
+	if (args->variables) {
+		struct ast_json *json_variables;
+
+		ast_ari_channels_external_media_parse_body(args->variables, args);
+		json_variables = ast_json_object_get(args->variables, "variables");
+		if (json_variables
+			&& json_to_ast_variables(response, json_variables, &variables)) {
+			return;
+		}
+	}
 
 	if (ast_strlen_zero(args->app)) {
 		ast_ari_response_error(response, 400, "Bad Request", "app cannot be empty");
@@ -2182,19 +2234,10 @@ void ast_ari_channels_external_media(struct ast_variable *headers,
 		args->direction = "both";
 	}
 
-	if (args->variables) {
-		struct ast_json *json_variables;
-
-		ast_ari_channels_external_media_parse_body(args->variables, args);
-		json_variables = ast_json_object_get(args->variables, "variables");
-		if (json_variables
-			&& json_to_ast_variables(response, json_variables, &variables)) {
-			return;
-		}
-	}
-
 	if (strcasecmp(args->encapsulation, "rtp") == 0 && strcasecmp(args->transport, "udp") == 0) {
 		external_media_rtp_udp(args, variables, response);
+	} else if (strcasecmp(args->encapsulation, "audiosocket") == 0 && strcasecmp(args->transport, "tcp") == 0) {
+		external_media_audiosocket_tcp(args, variables, response);
 	} else {
 		ast_ari_response_error(
 			response, 501, "Not Implemented",

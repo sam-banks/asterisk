@@ -102,6 +102,245 @@
 				<configOption name="allow">
 					<synopsis>Media Codec(s) to allow</synopsis>
 				</configOption>
+				<configOption name="codec_prefs_incoming_offer">
+					<synopsis>Codec negotiation prefs for incoming offers.</synopsis>
+					<description>
+						<para>
+							This is a string that describes how the codecs
+							specified on an incoming SDP offer (pending) are reconciled with the codecs specified
+							on an endpoint (configured) before being sent to the Asterisk core.
+							The string actually specifies 4 <literal>name:value</literal> pair parameters
+							separated by commas. Whitespace is ignored and they may be specified in any order.
+							Note that this option is reserved for future functionality.
+
+						</para>
+						<para>
+							Parameters:
+						</para>
+						<enumlist>
+							<enum name="prefer: &lt; pending | configured &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="pending"><para>The codec list from the caller. (default)</para></enum>
+									<enum name="configured"><para>The codec list from the endpoint.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="operation : &lt; intersect | only_preferred | only_nonpreferred &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="intersect"><para>Only common codecs with the preferred codecs first. (default)</para></enum>
+									<enum name="only_preferred"><para>Use only the preferred codecs.</para></enum>
+									<enum name="only_nonpreferred"><para>Use only the non-preferred codecs.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="keep : &lt; all | first &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="all"><para>After the operation, keep all codecs. (default)</para></enum>
+									<enum name="first"><para>After the operation, keep only the first codec.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="transcode : &lt; allow | prevent &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="allow"><para>Allow transcoding. (default)</para></enum>
+									<enum name="prevent"><para>Prevent transcoding.</para></enum>
+								</enumlist>
+							</enum>
+						</enumlist>
+						<para>
+						</para>
+						<example>
+							codec_prefs_incoming_offer = prefer: pending, operation: intersect, keep: all, transcode: allow
+						</example>
+						<para>
+							Prefer the codecs coming from the caller.  Use only the ones that are common.
+							keeping the order of the preferred list. Keep all codecs in the result. Allow transcoding.
+						</para>
+					</description>
+				</configOption>
+				<configOption name="codec_prefs_outgoing_offer">
+					<synopsis>Codec negotiation prefs for outgoing offers.</synopsis>
+					<description>
+						<para>
+							This is a string that describes how the codecs specified in the topology that
+							comes from the Asterisk core (pending) are reconciled with the codecs specified on an
+							endpoint (configured) when sending an SDP offer.
+							The string actually specifies 4 <literal>name:value</literal> pair parameters
+							separated by commas. Whitespace is ignored and they may be specified in any order.
+							Note that this option is reserved for future functionality.
+
+						</para>
+						<para>
+							Parameters:
+						</para>
+						<enumlist>
+							<enum name="prefer: &lt; pending | configured &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="pending"><para>The codec list from the core. (default)</para></enum>
+									<enum name="configured"><para>The codec list from the endpoint.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="operation : &lt; union | intersect | only_preferred | only_nonpreferred &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="union"><para>Merge the lists with the preferred codecs first. (default)</para></enum>
+									<enum name="intersect"><para>Only common codecs with the preferred codecs first. (default)</para></enum>
+									<enum name="only_preferred"><para>Use only the preferred codecs.</para></enum>
+									<enum name="only_nonpreferred"><para>Use only the non-preferred codecs.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="keep : &lt; all | first &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="all"><para>After the operation, keep all codecs. (default)</para></enum>
+									<enum name="first"><para>After the operation, keep only the first codec.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="transcode : &lt; allow | prevent &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="allow"><para>Allow transcoding. (default)</para></enum>
+									<enum name="prevent"><para>Prevent transcoding.</para></enum>
+								</enumlist>
+							</enum>
+						</enumlist>
+						<para>
+						</para>
+						<example>
+						codec_prefs_outgoing_offer = prefer: configured, operation: union, keep: first, transcode: prevent
+						</example>
+						<para>
+						Prefer the codecs coming from the endpoint.  Merge them with the codecs from the core
+						keeping the order of the preferred list. Keep only the first one. No transcoding allowed.
+						</para>
+					</description>
+				</configOption>
+				<configOption name="codec_prefs_incoming_answer">
+					<synopsis>Codec negotiation prefs for incoming answers.</synopsis>
+					<description>
+						<para>
+							This is a string that describes how the codecs specified in an incoming SDP answer
+							(pending) are reconciled with the codecs specified on an endpoint (configured)
+							when receiving an SDP answer.
+							The string actually specifies 4 <literal>name:value</literal> pair parameters
+							separated by commas. Whitespace is ignored and they may be specified in any order.
+							Note that this option is reserved for future functionality.
+
+						</para>
+						<para>
+							Parameters:
+						</para>
+						<enumlist>
+							<enum name="prefer: &lt; pending | configured &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="pending"><para>The codec list in the received SDP answer. (default)</para></enum>
+									<enum name="configured"><para>The codec list from the endpoint.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="operation : &lt; union | intersect | only_preferred | only_nonpreferred &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="union"><para>Merge the lists with the preferred codecs first.</para></enum>
+									<enum name="intersect"><para>Only common codecs with the preferred codecs first. (default)</para></enum>
+									<enum name="only_preferred"><para>Use only the preferred codecs.</para></enum>
+									<enum name="only_nonpreferred"><para>Use only the non-preferred codecs.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="keep : &lt; all | first &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="all"><para>After the operation, keep all codecs. (default)</para></enum>
+									<enum name="first"><para>After the operation, keep only the first codec.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="transcode : &lt; allow | prevent &gt;">
+								<para>
+								The transcode parameter is ignored when processing answers.
+								</para>
+							</enum>
+						</enumlist>
+						<para>
+						</para>
+						<example>
+						codec_prefs_incoming_answer = keep: first
+						</example>
+						<para>
+						Use the defaults but keep oinly the first codec.
+						</para>
+					</description>
+				</configOption>
+				<configOption name="codec_prefs_outgoing_answer">
+					<synopsis>Codec negotiation prefs for outgoing answers.</synopsis>
+					<description>
+						<para>
+							This is a string that describes how the codecs that come from the core (pending)
+							are reconciled with the codecs specified on an endpoint (configured)
+							when sending an SDP answer.
+							The string actually specifies 4 <literal>name:value</literal> pair parameters
+							separated by commas. Whitespace is ignored and they may be specified in any order.
+							Note that this option is reserved for future functionality.
+
+						</para>
+						<para>
+							Parameters:
+						</para>
+						<enumlist>
+							<enum name="prefer: &lt; pending | configured &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="pending"><para>The codec list that came from the core. (default)</para></enum>
+									<enum name="configured"><para>The codec list from the endpoint.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="operation : &lt; union | intersect | only_preferred | only_nonpreferred &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="union"><para>Merge the lists with the preferred codecs first.</para></enum>
+									<enum name="intersect"><para>Only common codecs with the preferred codecs first. (default)</para></enum>
+									<enum name="only_preferred"><para>Use only the preferred codecs.</para></enum>
+									<enum name="only_nonpreferred"><para>Use only the non-preferred codecs.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="keep : &lt; all | first &gt;">
+								<para>
+								</para>
+								<enumlist>
+									<enum name="all"><para>After the operation, keep all codecs. (default)</para></enum>
+									<enum name="first"><para>After the operation, keep only the first codec.</para></enum>
+								</enumlist>
+							</enum>
+							<enum name="transcode : &lt; allow | prevent &gt;">
+								<para>
+								The transcode parameter is ignored when processing answers.
+								</para>
+							</enum>
+						</enumlist>
+						<para>
+						</para>
+						<example>
+						codec_prefs_incoming_answer = keep: first
+						</example>
+						<para>
+						Use the defaults but keep oinly the first codec.
+						</para>
+					</description>
+				</configOption>
 				<configOption name="allow_overlap" default="yes">
 					<synopsis>Enable RFC3578 overlap dialing support.</synopsis>
 				</configOption>
@@ -426,6 +665,10 @@
 					<synopsis>Send the Diversion header, conveying the diversion
 					information to the called user agent</synopsis>
 				</configOption>
+				<configOption name="send_history_info" default="no">
+					<synopsis>Send the History-Info header, conveying the diversion
+					information to the called and calling user agents</synopsis>
+				</configOption>
 				<configOption name="send_pai" default="no">
 					<synopsis>Send the P-Asserted-Identity header</synopsis>
 				</configOption>
@@ -697,6 +940,13 @@
 						When enabled the UDPTL stack will use IPv6.
 					</para></description>
 				</configOption>
+				<configOption name="t38_bind_udptl_to_media_address" default="no">
+					<synopsis>Bind the UDPTL instance to the media_adress</synopsis>
+					<description><para>
+						If media_address is specified, this option causes the UDPTL instance to be bound to
+						the specified ip address which causes the packets to be sent from that address.
+					</para></description>
+				</configOption>
 				<configOption name="tone_zone">
 					<synopsis>Set which country's indications to use for channels created for this endpoint.</synopsis>
 				</configOption>
@@ -798,7 +1048,23 @@
 					<description><para>
 						This option only applies if <replaceable>media_encryption</replaceable> is
 						set to <literal>dtls</literal>.
-					</para></description>
+						</para><para>
+						It can be one of the following values:
+						</para><enumlist>
+							<enum name="no"><para>
+								meaning no verificaton is done.
+							</para></enum>
+							<enum name="fingerprint"><para>
+								meaning to verify the remote fingerprint.
+							</para></enum>
+							<enum name="certificate"><para>
+								meaning to verify the remote certificate.
+							</para></enum>
+							<enum name="yes"><para>
+								meaning to verify both the remote fingerprint and certificate.
+							</para></enum>
+						</enumlist>
+					</description>
 				</configOption>
 				<configOption name="dtls_rekey">
 					<synopsis>Interval at which to renegotiate the TLS session and rekey the SRTP session</synopsis>
@@ -923,7 +1189,74 @@
 					</para></description>
 				</configOption>
 				<configOption name="preferred_codec_only" default="no">
-					<synopsis>Respond to a SIP invite with the single most preferred codec rather than advertising all joint codec capabilities. This limits the other side's codec choice to exactly what we prefer.</synopsis>
+					<synopsis>Respond to a SIP invite with the single most preferred codec (DEPRECATED)</synopsis>
+					<description><para>Respond to a SIP invite with the single most preferred codec
+					rather than advertising all joint codec capabilities. This limits the other side's codec
+					choice to exactly what we prefer.</para>
+					<warning><para>This option has been deprecated in favor of
+					<literal>incoming_call_offer_pref</literal>.  Setting both options is unsupported.</para>
+					</warning>
+					</description>
+					<see-also>
+						<ref type="configOption">incoming_call_offer_pref</ref>
+					</see-also>
+				</configOption>
+				<configOption name="incoming_call_offer_pref" default="local">
+					<synopsis>Preferences for selecting codecs for an incoming call.</synopsis>
+					<description>
+						<para>Based on this setting, a joint list of preferred codecs between those
+						received in an incoming SDP offer (remote), and those specified in the
+						endpoint's "allow" parameter (local) es created and is passed to the Asterisk
+						core. </para>
+						<note><para>This list will consist of only those codecs found in both lists.</para></note>
+						<enumlist>
+							<enum name="local"><para>
+								Include all codecs in the local list that are also in the remote list
+								preserving the local order.  (default).
+							</para></enum>
+							<enum name="local_first"><para>
+								Include only the first codec in the local list that is also in the remote list.
+							</para></enum>
+							<enum name="remote"><para>
+								Include all codecs in the remote list that are also in the local list
+								preserving the remote order.
+							</para></enum>
+							<enum name="remote_first"><para>
+								Include only the first codec in the remote list that is also in the local list.
+							</para></enum>
+						</enumlist>
+					</description>
+				</configOption>
+				<configOption name="outgoing_call_offer_pref" default="remote_merge">
+					<synopsis>Preferences for selecting codecs for an outgoing call.</synopsis>
+					<description>
+						<para>Based on this setting, a joint list of preferred codecs between
+						those received from the Asterisk core (remote), and those specified in
+						the endpoint's "allow" parameter (local) is created and is used to create
+						the outgoing SDP offer.</para>
+						<enumlist>
+							<enum name="local"><para>
+								Include all codecs in the local list that are also in the remote list
+								preserving the local order.
+							</para></enum>
+							<enum name="local_merge"><para>
+								Include all codecs in the local list preserving the local order.
+							</para></enum>
+							<enum name="local_first"><para>
+								Include only the first codec in the local list.
+							</para></enum>
+							<enum name="remote"><para>
+								Include all codecs in the remote list that are also in the local list
+								preserving the remote order.
+							</para></enum>
+							<enum name="remote_merge"><para>
+                                                                Include all codecs in the local list preserving the remote order. (default)
+							</para></enum>
+							<enum name="remote_first"><para>
+								Include only the first codec in the remote list that is also in the local list.
+							</para></enum>
+						</enumlist>
+					</description>
 				</configOption>
 				<configOption name="rtp_keepalive">
 					<synopsis>Number of seconds between RTP comfort noise keepalive packets.</synopsis>
@@ -1138,6 +1471,31 @@
 						being forwarded.</para>
 					</description>
 				</configOption>
+				<configOption name="stir_shaken" default="no">
+					<synopsis>Enable STIR/SHAKEN support on this endpoint</synopsis>
+					<description><para>
+						Enable STIR/SHAKEN support on this endpoint. On incoming INVITEs,
+						the Identity header will be checked for validity. On outgoing
+						INVITEs, an Identity header will be added.</para>
+					</description>
+				</configOption>
+				<configOption name="allow_unauthenticated_options" default="no">
+					<synopsis>Skip authentication when receiving OPTIONS requests</synopsis>
+					<description><para>
+						RFC 3261 says that the response to an OPTIONS request MUST be the
+						same had the request been an INVITE. Some UAs use OPTIONS requests
+						like a 'ping' and the expectation is that they will return a
+						200 OK.</para>
+						<para>Enabling <literal>allow_unauthenticated_options</literal>
+						will skip authentication of OPTIONS requests for the given
+						endpoint.</para>
+						<para>There are security implications to enabling this setting as
+						it can allow information disclosure to occur - specifically, if
+						enabled, an external party could enumerate and find the endpoint
+						name by sending OPTIONS requests and examining the
+						responses.</para>
+					</description>
+				</configOption>
 			</configObject>
 			<configObject name="auth">
 				<synopsis>Authentication type</synopsis>
@@ -1153,21 +1511,75 @@
 						This option specifies which of the password style config options should be read
 						when trying to authenticate an endpoint inbound request. If set to <literal>userpass</literal>
 						then we'll read from the 'password' option. For <literal>md5</literal> we'll read
-						from 'md5_cred'. If set to <literal>google_oauth</literal> then we'll read from the refresh_token/oauth_clientid/oauth_secret fields.
+						from 'md5_cred'. If set to <literal>google_oauth</literal> then we'll read from the
+						refresh_token/oauth_clientid/oauth_secret fields. The following values are valid:
 						</para>
 						<enumlist>
 							<enum name="md5"/>
 							<enum name="userpass"/>
 							<enum name="google_oauth"/>
 						</enumlist>
+						<para>
+						</para>
+						<note>
+							<para>
+								This setting only describes whether the password is in
+								plain text or has been pre-hashed with MD5.  It doesn't describe
+								the acceptable digest algorithms we'll accept in a received
+								challenge.
+							</para>
+						</note>
 					</description>
 				</configOption>
 				<configOption name="nonce_lifetime" default="32">
 					<synopsis>Lifetime of a nonce associated with this authentication config.</synopsis>
 				</configOption>
-				<configOption name="md5_cred">
+				<configOption name="md5_cred" default="">
 					<synopsis>MD5 Hash used for authentication.</synopsis>
-					<description><para>Only used when auth_type is <literal>md5</literal>.</para></description>
+					<description><para>
+						Only used when auth_type is <literal>md5</literal>.
+						As an alternative to specifying a plain text password,
+						you can hash the username, realm and password
+						together one time and place the hash value here.
+						The input to the hash function must be in the
+						following format:
+						</para>
+						<para>
+						</para>
+						<para>
+						&lt;username&gt;:&lt;realm&gt;:&lt;password&gt;
+						</para>
+						<para>
+						</para>
+						<para>
+						For incoming authentication (asterisk is the server),
+						the realm must match either the realm set in this object
+						or the <variable>default_realm</variable> set in in the
+						<replaceable>global</replaceable> object.
+						</para>
+						<para>
+						</para>
+						<para>
+						For outgoing authentication (asterisk is the UAC),
+						the realm must match what the server will be sending
+						in their WWW-Authenticate header.  It can't be blank
+						unless you expect the server to be sending a blank
+						realm in the header.  You can't use pre-hashed
+						paswords with a wildcard auth object.
+						You can generate the hash with the following shell
+						command:
+						</para>
+						<para>
+						</para>
+						<para>
+						$ echo -n "myname:myrealm:mypassword" | md5sum
+						</para>
+						<para>
+						</para>
+						<para>
+						Note the '-n'.  You don't want a newline to be part
+						of the hash.
+					</para></description>
 				</configOption>
 				<configOption name="password">
 					<synopsis>Plain text password used for authentication.</synopsis>
@@ -1182,29 +1594,44 @@
 				<configOption name="oauth_secret">
 					<synopsis>OAuth 2.0 application's secret</synopsis>
 				</configOption>
-				<configOption name="realm">
+				<configOption name="realm" default="">
 					<synopsis>SIP realm for endpoint</synopsis>
 					<description><para>
-						The treatment of this value depends upon how the authentication
-						object is used.
-						</para><para>
-						When used as an inbound authentication object, the realm is sent
-						as part of the challenge so the peer can know which key to use
-						when responding.  An empty value will use the
-						<replaceable>global</replaceable> section's
-						<literal>default_realm</literal> value when issuing a challenge.
-						</para><para>
-						When used as an outbound authentication object, the realm is
-						matched with the received challenge realm to determine which
-						authentication object to use when responding to the challenge.  An
-						empty value matches any challenging realm when determining
-						which authentication object matches a received challenge.
+						For incoming authentication (asterisk is the UAS),
+						this is the realm to be sent on WWW-Authenticate
+						headers.  If not specified, the <replaceable>global</replaceable>
+						object's <variable>default_realm</variable> will be used.
 						</para>
-						<note><para>
+						<para>
+						</para>
+						<para>
+						For outgoing authentication (asterisk is the UAS), this
+						must either be the realm the server is expected to send,
+						or left blank or contain a single '*' to automatically
+						use the realm sent by the server. If you have multiple
+						auth object for an endpoint, the realm is also used to
+						match the auth object to the realm the server sent.
+						</para>
+						<para>
+						</para>
+						<note>
+						<para>
 						Using the same auth section for inbound and outbound
 						authentication is not recommended.  There is a difference in
 						meaning for an empty realm setting between inbound and outbound
-						authentication uses.</para></note>
+						authentication uses.
+						</para>
+						</note>
+						<para>
+						</para>
+						<note>
+							<para>
+								If more than one auth object with the same realm or
+								more than one wildcard auth object associated to
+								an endpoint, we can only use the first one of
+								each defined on the endpoint.
+							</para>
+						</note>
 					</description>
 				</configOption>
 				<configOption name="type">
@@ -1577,8 +2004,9 @@
 						TLS.  Unfortunately, refreshing a registration may register a
 						different contact address and exceed
 						<replaceable>max_contacts</replaceable>.  The
-						<replaceable>remove_existing</replaceable> option can help by
-						removing the soonest to expire contact(s) over
+						<replaceable>remove_existing</replaceable> and
+						<replaceable>remove_unavailable</replaceable> options can help by
+						removing either the soonest to expire or unavailable contact(s) over
 						<replaceable>max_contacts</replaceable> which is likely the
 						old <replaceable>rewrite_contact</replaceable> contact source
 						address being refreshed.
@@ -1618,6 +2046,26 @@
 						<note><para>This should be set to <literal>yes</literal> and
 						<replaceable>max_contacts</replaceable> set to <literal>1</literal> if you
 						wish to stick with the older <literal>chan_sip</literal> behaviour.
+						</para></note>
+					</description>
+				</configOption>
+				<configOption name="remove_unavailable" default="no">
+					<synopsis>Determines whether new contacts should replace unavailable ones.</synopsis>
+					<description><para>
+						The effect of this setting depends on the setting of
+						<replaceable>remove_existing</replaceable>.</para>
+						<para>If <replaceable>remove_existing</replaceable> is set to
+						<literal>no</literal> (default), setting remove_unavailable to
+						<literal>yes</literal> will remove only unavailable contacts that exceed
+						<replaceable>max_contacts</replaceable>	to allow an incoming
+						REGISTER to complete sucessfully.</para>
+						<para>If <replaceable>remove_existing</replaceable> is set to
+						<literal>yes</literal>, setting remove_unavailable to
+						<literal>yes</literal> will prioritize unavailable contacts for removal
+						instead of just removing the contact that expires the soonest.</para>
+						<note><para>See <replaceable>remove_existing</replaceable> and
+						<replaceable>max_contacts</replaceable> for further information about how
+						these 3 settings interact.
 						</para></note>
 					</description>
 				</configOption>
@@ -1743,6 +2191,12 @@
 							this functionality.
 						</para></note>
 					</description>
+				</configOption>
+				<configOption name="disable_rport" default="no">
+					<synopsis>Disable the use of rport in outgoing requests.</synopsis>
+					<description><para>
+						Remove "rport" parameter from the outgoing requests.
+					</para></description>
 				</configOption>
 				<configOption name="type">
 					<synopsis>Must be of type 'system' UNLESS the object name is 'system'.</synopsis>
@@ -2017,6 +2471,9 @@
 				</parameter>
 				<parameter name="RemoveExisting">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='remove_existing']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="RemoveUnavailable">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='remove_unavailable']/synopsis/node())"/></para>
 				</parameter>
 				<parameter name="Mailboxes">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='mailboxes']/synopsis/node())"/></para>
@@ -2333,6 +2790,9 @@
 				<parameter name="T38UdptlIpv6">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='endpoint']/configOption[@name='t38_udptl_ipv6']/synopsis/node())"/></para>
 				</parameter>
+				<parameter name="T38BindUdptlToMediaAddress">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='endpoint']/configOption[@name='t38_bind_udptl_to_media_address']/synopsis/node())"/></para>
+				</parameter>
 				<parameter name="ToneZone">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='endpoint']/configOption[@name='tone_zone']/synopsis/node())"/></para>
 				</parameter>
@@ -2477,6 +2937,9 @@
 				</parameter>
 				<parameter name="RemoveExisting">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='remove_existing']/synopsis/node())"/></para>
+				</parameter>
+				<parameter name="RemoveUnavailable">
+					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='remove_unavailable']/synopsis/node())"/></para>
 				</parameter>
 				<parameter name="Mailboxes">
 					<para><xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='aor']/configOption[@name='mailboxes']/synopsis/node())"/></para>
@@ -2859,6 +3322,18 @@ static pj_sockaddr host_ip_ipv6;
 /*! Local host address for IPv6 (string form) */
 static char host_ip_ipv6_string[PJ_INET6_ADDRSTRLEN];
 
+void ast_sip_add_date_header(pjsip_tx_data *tdata)
+{
+	char date[256];
+	struct tm tm;
+	time_t t = time(NULL);
+
+	gmtime_r(&t, &tm);
+	strftime(date, sizeof(date), "%a, %d %b %Y %T GMT", &tm);
+
+	ast_sip_add_header(tdata, "Date", date);
+}
+
 static int register_service(void *data)
 {
 	pjsip_module **module = data;
@@ -2922,6 +3397,12 @@ void ast_sip_unregister_authenticator(struct ast_sip_authenticator *auth)
 
 int ast_sip_requires_authentication(struct ast_sip_endpoint *endpoint, pjsip_rx_data *rdata)
 {
+	if (endpoint->allow_unauthenticated_options
+		&& !pjsip_method_cmp(&rdata->msg_info.msg->line.req.method, &pjsip_options_method)) {
+		ast_debug(3, "Skipping OPTIONS authentication due to endpoint configuration\n");
+		return 0;
+	}
+
 	if (!registered_authenticator) {
 		ast_log(LOG_WARNING, "No SIP authenticator registered. Assuming authentication is not required\n");
 		return 0;
@@ -3094,6 +3575,21 @@ struct ast_sip_endpoint *ast_sip_identify_endpoint(pjsip_rx_data *rdata)
 		}
 	}
 	return endpoint;
+}
+
+char *ast_sip_rdata_get_header_value(pjsip_rx_data *rdata, const pj_str_t str)
+{
+	pjsip_generic_string_hdr *hdr;
+	pj_str_t hdr_val;
+
+	hdr = pjsip_msg_find_hdr_by_name(rdata->msg_info.msg, &str, NULL);
+	if (!hdr) {
+		return NULL;
+	}
+
+	pj_strdup_with_null(rdata->tp_info.pool, &hdr_val, &hdr->hvalue);
+
+	return hdr_val.ptr;
 }
 
 static int do_cli_dump_endpt(void *v_a)
@@ -3394,6 +3890,17 @@ static int sip_dialog_create_from(pj_pool_t *pool, pj_str_t *from, const char *u
 		type |= PJSIP_TRANSPORT_IPV6;
 	}
 
+	/* In multidomain scenario, username may contain @ with domain info */
+	if (!ast_sip_get_disable_multi_domain() && strchr(user, '@')) {
+		from->ptr = pj_pool_alloc(pool, PJSIP_MAX_URL_SIZE);
+		from->slen = pj_ansi_snprintf(from->ptr, PJSIP_MAX_URL_SIZE,
+				"<sip:%s%s%s>",
+				user,
+				(type != PJSIP_TRANSPORT_UDP && type != PJSIP_TRANSPORT_UDP6) ? ";transport=" : "",
+				(type != PJSIP_TRANSPORT_UDP && type != PJSIP_TRANSPORT_UDP6) ? pjsip_transport_get_type_name(type) : "");
+		return 0;
+	}
+
 	if (!ast_strlen_zero(domain)) {
 		from->ptr = pj_pool_alloc(pool, PJSIP_MAX_URL_SIZE);
 		from->slen = pj_ansi_snprintf(from->ptr, PJSIP_MAX_URL_SIZE,
@@ -3543,7 +4050,7 @@ void ast_sip_add_usereqphone(const struct ast_sip_endpoint *endpoint, pj_pool_t 
 
 	/* Test URI user against allowed characters in AST_DIGIT_ANY */
 	for (; i < pj_strlen(&sip_uri->user); i++) {
-		if (!strchr(AST_DIGIT_ANYNUM, pj_strbuf(&sip_uri->user)[i])) {
+		if (!strchr(AST_DIGIT_ANY, pj_strbuf(&sip_uri->user)[i])) {
 			break;
 		}
 	}
@@ -3572,6 +4079,12 @@ pjsip_dialog *ast_sip_create_dialog_uac(const struct ast_sip_endpoint *endpoint,
 	pj_cstr(&target_uri, uri);
 
 	res = pjsip_dlg_create_uac(pjsip_ua_instance(), &local_uri, NULL, &remote_uri, &target_uri, &dlg);
+	if (res == PJ_SUCCESS && !(PJSIP_URI_SCHEME_IS_SIP(dlg->target) || PJSIP_URI_SCHEME_IS_SIPS(dlg->target))) {
+		/* dlg->target is a pjsip_other_uri, but it's assumed to be a
+		 * pjsip_sip_uri below. Fail fast. */
+		res = PJSIP_EINVALIDURI;
+		pjsip_dlg_terminate(dlg);
+	}
 	if (res != PJ_SUCCESS) {
 		if (res == PJSIP_EINVALIDURI) {
 			ast_log(LOG_ERROR,
@@ -3695,7 +4208,11 @@ static int uas_use_sips_contact(pjsip_rx_data *rdata)
 	return 0;
 }
 
-pjsip_dialog *ast_sip_create_dialog_uas(const struct ast_sip_endpoint *endpoint, pjsip_rx_data *rdata, pj_status_t *status)
+typedef pj_status_t (*create_dlg_uac)(pjsip_user_agent *ua, pjsip_rx_data *rdata,
+	const pj_str_t *contact, pjsip_dialog **p_dlg);
+
+static pjsip_dialog *create_dialog_uas(const struct ast_sip_endpoint *endpoint,
+	pjsip_rx_data *rdata, pj_status_t *status, create_dlg_uac create_fun)
 {
 	pjsip_dialog *dlg;
 	pj_str_t contact;
@@ -3730,11 +4247,7 @@ pjsip_dialog *ast_sip_create_dialog_uas(const struct ast_sip_endpoint *endpoint,
 			(type != PJSIP_TRANSPORT_UDP && type != PJSIP_TRANSPORT_UDP6) ? ";transport=" : "",
 			(type != PJSIP_TRANSPORT_UDP && type != PJSIP_TRANSPORT_UDP6) ? pjsip_transport_get_type_name(type) : "");
 
-#ifdef HAVE_PJSIP_DLG_CREATE_UAS_AND_INC_LOCK
-	*status = pjsip_dlg_create_uas_and_inc_lock(pjsip_ua_instance(), rdata, &contact, &dlg);
-#else
-	*status = pjsip_dlg_create_uas(pjsip_ua_instance(), rdata, &contact, &dlg);
-#endif
+	*status = create_fun(pjsip_ua_instance(), rdata, &contact, &dlg);
 	if (*status != PJ_SUCCESS) {
 		char err[PJ_ERR_MSG_SIZE];
 
@@ -3751,12 +4264,46 @@ pjsip_dialog *ast_sip_create_dialog_uas(const struct ast_sip_endpoint *endpoint,
 
 	ast_sip_tpselector_unref(&selector);
 
-#ifdef HAVE_PJSIP_DLG_CREATE_UAS_AND_INC_LOCK
-	pjsip_dlg_dec_lock(dlg);
-#endif
-
 	return dlg;
 }
+
+pjsip_dialog *ast_sip_create_dialog_uas(const struct ast_sip_endpoint *endpoint, pjsip_rx_data *rdata, pj_status_t *status)
+{
+#ifdef HAVE_PJSIP_DLG_CREATE_UAS_AND_INC_LOCK
+	pjsip_dialog *dlg;
+
+	dlg = create_dialog_uas(endpoint, rdata, status, pjsip_dlg_create_uas_and_inc_lock);
+	if (dlg) {
+		pjsip_dlg_dec_lock(dlg);
+	}
+
+	return dlg;
+#else
+	return create_dialog_uas(endpoint, rdata, status, pjsip_dlg_create_uas);
+#endif
+}
+
+pjsip_dialog *ast_sip_create_dialog_uas_locked(const struct ast_sip_endpoint *endpoint,
+	pjsip_rx_data *rdata, pj_status_t *status)
+{
+#ifdef HAVE_PJSIP_DLG_CREATE_UAS_AND_INC_LOCK
+	return create_dialog_uas(endpoint, rdata, status, pjsip_dlg_create_uas_and_inc_lock);
+#else
+	/*
+	 * This is put here in order to be compatible with older versions of pjproject.
+	 * Best we can do in this case is immediately lock after getting the dialog.
+	 * However, that does leave a "gap" between creating and locking.
+	 */
+	pjsip_dialog *dlg;
+
+	dlg = create_dialog_uas(endpoint, rdata, status, pjsip_dlg_create_uas);
+	if (dlg) {
+		pjsip_dlg_inc_lock(dlg);
+	}
+
+	return dlg;
+#endif
+ }
 
 int ast_sip_create_rdata_with_contact(pjsip_rx_data *rdata, char *packet, const char *src_name, int src_port,
 	char *transport_type, const char *local_name, int local_port, const char *contact)
@@ -3951,7 +4498,7 @@ static int create_out_of_dialog_request(const pjsip_method *method, struct ast_s
 		contact_hdr = pjsip_msg_find_hdr_by_names((*tdata)->msg, &HCONTACT, &HCONTACTSHORT, NULL);
 		if (contact_hdr) {
 			contact_uri = pjsip_uri_get_uri(contact_hdr->uri);
-			pj_strdup2(pool, &contact_uri->user, endpoint->contact_user);
+			pj_strdup2((*tdata)->pool, &contact_uri->user, endpoint->contact_user);
 		}
 	}
 
@@ -4054,8 +4601,6 @@ static pj_bool_t does_method_match(const pj_str_t *message_method, const char *s
 	return pj_stristr(&method, message_method) ? PJ_TRUE : PJ_FALSE;
 }
 
-/*! Maximum number of challenges before assuming that we are in a loop */
-#define MAX_RX_CHALLENGES	10
 #define TIMER_INACTIVE		0
 #define TIMEOUT_TIMER2		5
 
@@ -5023,6 +5568,52 @@ int ast_sip_str_to_dtmf(const char * dtmf_mode)
 	return result;
 }
 
+const char *ast_sip_call_codec_pref_to_str(struct ast_flags pref)
+{
+	const char *value;
+
+	if (ast_sip_call_codec_pref_test(pref, LOCAL) &&  ast_sip_call_codec_pref_test(pref, INTERSECT) && ast_sip_call_codec_pref_test(pref, ALL)) {
+		value = "local";
+	} else if (ast_sip_call_codec_pref_test(pref, LOCAL) &&  ast_sip_call_codec_pref_test(pref, UNION) && ast_sip_call_codec_pref_test(pref, ALL)) {
+		value = "local_merge";
+	} else if (ast_sip_call_codec_pref_test(pref, LOCAL) &&  ast_sip_call_codec_pref_test(pref, INTERSECT) && ast_sip_call_codec_pref_test(pref, FIRST)) {
+		value = "local_first";
+	} else if (ast_sip_call_codec_pref_test(pref, REMOTE) &&  ast_sip_call_codec_pref_test(pref, INTERSECT) && ast_sip_call_codec_pref_test(pref, ALL)) {
+		value = "remote";
+	} else if (ast_sip_call_codec_pref_test(pref, REMOTE) &&  ast_sip_call_codec_pref_test(pref, UNION) && ast_sip_call_codec_pref_test(pref, ALL)) {
+		value = "remote_merge";
+	} else if (ast_sip_call_codec_pref_test(pref, REMOTE) &&  ast_sip_call_codec_pref_test(pref, UNION) && ast_sip_call_codec_pref_test(pref, FIRST)) {
+		value = "remote_first";
+	} else {
+		value = "unknown";
+	}
+
+	return value;
+}
+
+int ast_sip_call_codec_str_to_pref(struct ast_flags *pref, const char *pref_str, int is_outgoing)
+{
+	pref->flags = 0;
+
+	if (strcmp(pref_str, "local") == 0) {
+		ast_set_flag(pref, AST_SIP_CALL_CODEC_PREF_LOCAL | AST_SIP_CALL_CODEC_PREF_INTERSECT | AST_SIP_CALL_CODEC_PREF_ALL);
+	} else if (is_outgoing && strcmp(pref_str, "local_merge") == 0) {
+		ast_set_flag(pref, AST_SIP_CALL_CODEC_PREF_LOCAL | AST_SIP_CALL_CODEC_PREF_UNION | AST_SIP_CALL_CODEC_PREF_ALL);
+	} else if (strcmp(pref_str, "local_first") == 0) {
+		ast_set_flag(pref, AST_SIP_CALL_CODEC_PREF_LOCAL | AST_SIP_CALL_CODEC_PREF_INTERSECT | AST_SIP_CALL_CODEC_PREF_FIRST);
+	} else if (strcmp(pref_str, "remote") == 0) {
+		ast_set_flag(pref, AST_SIP_CALL_CODEC_PREF_REMOTE | AST_SIP_CALL_CODEC_PREF_INTERSECT | AST_SIP_CALL_CODEC_PREF_ALL);
+	} else if (is_outgoing && strcmp(pref_str, "remote_merge") == 0) {
+		ast_set_flag(pref, AST_SIP_CALL_CODEC_PREF_REMOTE | AST_SIP_CALL_CODEC_PREF_UNION | AST_SIP_CALL_CODEC_PREF_ALL);
+	} else if (strcmp(pref_str, "remote_first") == 0) {
+		ast_set_flag(pref, AST_SIP_CALL_CODEC_PREF_REMOTE | AST_SIP_CALL_CODEC_PREF_UNION | AST_SIP_CALL_CODEC_PREF_FIRST);
+	} else {
+		return -1;
+	}
+
+	return 0;
+}
+
 /*!
  * \brief Set name and number information on an identity header.
  *
@@ -5403,6 +5994,6 @@ AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_GLOBAL_SYMBOLS | AST_MODFLAG_LOAD_
 	.unload = unload_module,
 	.reload = reload_module,
 	.load_pri = AST_MODPRI_CHANNEL_DEPEND - 5,
-	.requires = "dnsmgr,res_pjproject",
+	.requires = "dnsmgr,res_pjproject,res_sorcery_config,res_sorcery_memory,res_sorcery_astdb",
 	.optional_modules = "res_statsd",
 );

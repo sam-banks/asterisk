@@ -240,6 +240,16 @@
 				<configOption name="timeout">
 					<synopsis>Kick the user out of the conference after this many seconds. 0 means there is no timeout for the user.</synopsis>
 				</configOption>
+				<configOption name="text_messaging" default="yes">
+					<synopsis>Sets if text messages are sent to the user.</synopsis>
+					<description><para>If text messaging is enabled for this user then
+					text messages will be sent to it. These may be events or from other
+					participants in the conference bridge. If disabled then no text
+					messages are sent to the user.</para></description>
+				</configOption>
+				<configOption name="answer_channel" default="yes">
+					<synopsis>Sets if a user's channel should be answered if currently unanswered.</synopsis>
+				</configOption>
 			</configObject>
 			<configObject name="bridge_profile">
 				<synopsis>A named profile to apply to specific bridges.</synopsis>
@@ -272,6 +282,15 @@
 						sample rate is set that Asterisk does not support, the
 						closest sample rate Asterisk does support to the one requested
 						will be used.
+					</para></description>
+				</configOption>
+				<configOption name="maximum_sample_rate">
+					<synopsis>Set the maximum native sample rate for mixing the conference</synopsis>
+					<description><para>
+						Sets the maximum native sample rate the
+						conference is mixed at. This is set to not have a
+						maximum by default. If a sample rate is specified,
+						though, the native sample rate will never exceed it.
 					</para></description>
 				</configOption>
 				<configOption name="language" default="en">
@@ -517,8 +536,22 @@
 								<para>The highest estimated maximum bitrate of all receivers in the bridge
 								is taken and sent to each sender.</para>
 							</enum>
+							<enum name="force">
+								<para>The bitrate configured in <literal>remb_estimated_bitrate</literal>
+								is sent to each sender.</para>
+							</enum>
 						</enumlist>
 					</description>
+					<see-also><ref type="configOption">remb_estimated_bitrate</ref></see-also>
+				</configOption>
+				<configOption name="remb_estimated_bitrate">
+					<synopsis>Sets the estimated bitrate sent to each participant in REMB reports</synopsis>
+					<description><para>
+					    When <literal>remb_behavior</literal> is set to <literal>force</literal>,
+					    this options sets the estimated bitrate (in bits per second) sent to each participant
+					    in REMB reports.
+					</para></description>
+					<see-also><ref type="configOption">remb_behavior</ref></see-also>
 				</configOption>
 				<configOption name="enable_events" default="no">
 					<synopsis>Enables events for this bridge</synopsis>
@@ -1579,7 +1612,13 @@ static char *handle_cli_confbridge_show_user_profile(struct ast_cli_entry *e, in
 	ast_cli(a->fd,"Announce User Count all: %s\n",
 		u_profile.flags & USER_OPT_ANNOUNCEUSERCOUNTALL ?
 		"enabled" : "disabled");
-		ast_cli(a->fd,"\n");
+	ast_cli(a->fd,"Text Messaging:          %s\n",
+			u_profile.flags & USER_OPT_TEXT_MESSAGING ?
+			"enabled" : "disabled");
+	ast_cli(a->fd,"Answer Channel:          %s\n",
+			u_profile.flags & USER_OPT_ANSWER_CHANNEL ?
+			"true" : "false");
+	ast_cli(a->fd, "\n");
 
 	return CLI_SUCCESS;
 }
@@ -1681,6 +1720,13 @@ static char *handle_cli_confbridge_show_bridge_profile(struct ast_cli_entry *e, 
 		ast_copy_string(tmp, "auto", sizeof(tmp));
 	}
 	ast_cli(a->fd,"Internal Sample Rate: %s\n", tmp);
+
+	if (b_profile.maximum_sample_rate) {
+		snprintf(tmp, sizeof(tmp), "%u", b_profile.maximum_sample_rate);
+	} else {
+		ast_copy_string(tmp, "none", sizeof(tmp));
+	}
+	ast_cli(a->fd,"Maximum Sample Rate: %s\n", tmp);
 
 	if (b_profile.mix_interval) {
 		ast_cli(a->fd,"Mixing Interval:      %u\n", b_profile.mix_interval);
@@ -2133,7 +2179,9 @@ static int remb_behavior_handler(const struct aco_option *opt, struct ast_variab
 		BRIDGE_OPT_REMB_BEHAVIOR_HIGHEST |
 		BRIDGE_OPT_REMB_BEHAVIOR_AVERAGE_ALL |
 		BRIDGE_OPT_REMB_BEHAVIOR_LOWEST_ALL |
-		BRIDGE_OPT_REMB_BEHAVIOR_HIGHEST_ALL);
+		BRIDGE_OPT_REMB_BEHAVIOR_HIGHEST_ALL |
+		BRIDGE_OPT_REMB_BEHAVIOR_FORCE
+		);
 
 	if (!strcasecmp(var->value, "average")) {
 		ast_set_flag(b_profile, BRIDGE_OPT_REMB_BEHAVIOR_AVERAGE);
@@ -2147,6 +2195,8 @@ static int remb_behavior_handler(const struct aco_option *opt, struct ast_variab
 		ast_set_flag(b_profile, BRIDGE_OPT_REMB_BEHAVIOR_LOWEST_ALL);
 	} else if (!strcasecmp(var->value, "highest_all")) {
 		ast_set_flag(b_profile, BRIDGE_OPT_REMB_BEHAVIOR_HIGHEST_ALL);
+	} else if (!strcasecmp(var->value, "force")) {
+		ast_set_flag(b_profile, BRIDGE_OPT_REMB_BEHAVIOR_FORCE);
 	} else {
 		return -1;
 	}
@@ -2365,6 +2415,8 @@ int conf_load_config(void)
 	aco_option_register(&cfg_info, "dsp_talking_threshold", ACO_EXACT, user_types, __stringify(DEFAULT_TALKING_THRESHOLD), OPT_UINT_T, 0, FLDSET(struct user_profile, talking_threshold));
 	aco_option_register(&cfg_info, "jitterbuffer", ACO_EXACT, user_types, "no", OPT_BOOLFLAG_T, 1, FLDSET(struct user_profile, flags), USER_OPT_JITTERBUFFER);
 	aco_option_register(&cfg_info, "timeout", ACO_EXACT, user_types, "0", OPT_UINT_T, 0, FLDSET(struct user_profile, timeout));
+	aco_option_register(&cfg_info, "text_messaging", ACO_EXACT, user_types, "yes", OPT_BOOLFLAG_T, 1, FLDSET(struct user_profile, flags), USER_OPT_TEXT_MESSAGING);
+	aco_option_register(&cfg_info, "answer_channel", ACO_EXACT, user_types, "yes", OPT_BOOLFLAG_T, 1, FLDSET(struct user_profile, flags), USER_OPT_ANSWER_CHANNEL);
 
 	/* This option should only be used with the CONFBRIDGE dialplan function */
 	aco_option_register_custom(&cfg_info, "template", ACO_EXACT, user_types, NULL, user_template_handler, 0);
@@ -2376,6 +2428,7 @@ int conf_load_config(void)
 	/* "auto" will fail to parse as a uint, but we use PARSE_DEFAULT to set the value to 0 in that case, which is the value that auto resolves to */
 	aco_option_register(&cfg_info, "internal_sample_rate", ACO_EXACT, bridge_types, "0", OPT_UINT_T, PARSE_DEFAULT, FLDSET(struct bridge_profile, internal_sample_rate), 0);
 	aco_option_register(&cfg_info, "binaural_active", ACO_EXACT, bridge_types, "no", OPT_BOOLFLAG_T, 1, FLDSET(struct bridge_profile, flags), BRIDGE_OPT_BINAURAL_ACTIVE);
+	aco_option_register(&cfg_info, "maximum_sample_rate", ACO_EXACT, bridge_types, "0", OPT_UINT_T, PARSE_DEFAULT, FLDSET(struct bridge_profile, maximum_sample_rate), 0);
 	aco_option_register_custom(&cfg_info, "mixing_interval", ACO_EXACT, bridge_types, "20", mix_interval_handler, 0);
 	aco_option_register(&cfg_info, "record_conference", ACO_EXACT, bridge_types, "no", OPT_BOOLFLAG_T, 1, FLDSET(struct bridge_profile, flags), BRIDGE_OPT_RECORD_CONFERENCE);
 	aco_option_register_custom(&cfg_info, "video_mode", ACO_EXACT, bridge_types, NULL, video_mode_handler, 0);
@@ -2391,6 +2444,7 @@ int conf_load_config(void)
 	aco_option_register(&cfg_info, "video_update_discard", ACO_EXACT, bridge_types, "2000", OPT_UINT_T, 0, FLDSET(struct bridge_profile, video_update_discard));
 	aco_option_register(&cfg_info, "remb_send_interval", ACO_EXACT, bridge_types, "0", OPT_UINT_T, 0, FLDSET(struct bridge_profile, remb_send_interval));
 	aco_option_register_custom(&cfg_info, "remb_behavior", ACO_EXACT, bridge_types, "average", remb_behavior_handler, 0);
+	aco_option_register(&cfg_info, "remb_estimated_bitrate", ACO_EXACT, bridge_types, "0", OPT_UINT_T, 0, FLDSET(struct bridge_profile, remb_estimated_bitrate));
 	aco_option_register(&cfg_info, "enable_events", ACO_EXACT, bridge_types, "no", OPT_BOOLFLAG_T, 1, FLDSET(struct bridge_profile, flags), BRIDGE_OPT_ENABLE_EVENTS);
 	/* This option should only be used with the CONFBRIDGE dialplan function */
 	aco_option_register_custom(&cfg_info, "template", ACO_EXACT, bridge_types, NULL, bridge_template_handler, 0);

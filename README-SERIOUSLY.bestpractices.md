@@ -365,7 +365,7 @@ set channel variables; which allows the execution of dialplan functions.
 
 Dialplan functions within Asterisk are incredibly powerful, which is wonderful
 for building applications using Asterisk. But during the read or write
-execution, certain diaplan functions do much more. For example, reading the
+execution, certain dialplan functions do much more. For example, reading the
 SHELL() function can execute arbitrary commands on the system Asterisk is
 running on. Writing to the FILE() function can change any file that Asterisk has
 write access to.

@@ -226,6 +226,9 @@
 					<enum name="t38timeout">
 						<para>R/W The timeout used for T.38 negotiation.</para>
 					</enum>
+					<enum name="negotiate_both">
+						<para>R/W Upon v21 detection allow gateway to send negotiation requests to both T.38 endpoints, and do not wait on the "other" side to initiate (yes|no)</para>
+					</enum>
 				</enumlist>
 			</parameter>
 		</syntax>
@@ -722,6 +725,7 @@ static struct ast_fax_session_details *session_details_new(void)
 	d->gateway_id = -1;
 	d->faxdetect_id = -1;
 	d->gateway_timeout = 0;
+	d->negotiate_both = 0;
 
 	return d;
 }
@@ -1447,8 +1451,8 @@ static void set_channel_variables(struct ast_channel *chan, struct ast_fax_sessi
 	pbx_builtin_setvar_helper(chan, "FAXSTATUS", S_OR(details->result, NULL));
 	pbx_builtin_setvar_helper(chan, "FAXERROR", S_OR(details->error, NULL));
 	pbx_builtin_setvar_helper(chan, "FAXSTATUSSTRING", S_OR(details->resultstr, NULL));
-	pbx_builtin_setvar_helper(chan, "REMOTESTATIONID", S_OR(details->remotestationid, NULL));
-	pbx_builtin_setvar_helper(chan, "LOCALSTATIONID", S_OR(details->localstationid, NULL));
+	pbx_builtin_setvar_helper(chan, "REMOTESTATIONID", AST_JSON_UTF8_VALIDATE(details->remotestationid));
+	pbx_builtin_setvar_helper(chan, "LOCALSTATIONID", AST_JSON_UTF8_VALIDATE(details->localstationid));
 	pbx_builtin_setvar_helper(chan, "FAXBITRATE", S_OR(details->transfer_rate, NULL));
 	pbx_builtin_setvar_helper(chan, "FAXRESOLUTION", S_OR(details->resolution, NULL));
 
@@ -2032,11 +2036,11 @@ static int report_receive_fax_status(struct ast_channel *chan, const char *filen
 		const char *fax_bitrate;
 		SCOPED_CHANNELLOCK(lock, chan);
 
-		remote_station_id = S_OR(pbx_builtin_getvar_helper(chan, "REMOTESTATIONID"), "");
+		remote_station_id = AST_JSON_UTF8_VALIDATE(pbx_builtin_getvar_helper(chan, "REMOTESTATIONID"));
 		if (!ast_strlen_zero(remote_station_id)) {
 			remote_station_id = ast_strdupa(remote_station_id);
 		}
-		local_station_id = S_OR(pbx_builtin_getvar_helper(chan, "LOCALSTATIONID"), "");
+		local_station_id = AST_JSON_UTF8_VALIDATE(pbx_builtin_getvar_helper(chan, "LOCALSTATIONID"));
 		if (!ast_strlen_zero(local_station_id)) {
 			local_station_id = ast_strdupa(local_station_id);
 		}
@@ -2539,11 +2543,11 @@ static int report_send_fax_status(struct ast_channel *chan, struct ast_fax_sessi
 		const char *fax_bitrate;
 		SCOPED_CHANNELLOCK(lock, chan);
 
-		remote_station_id = S_OR(pbx_builtin_getvar_helper(chan, "REMOTESTATIONID"), "");
+		remote_station_id = AST_JSON_UTF8_VALIDATE(pbx_builtin_getvar_helper(chan, "REMOTESTATIONID"));
 		if (!ast_strlen_zero(remote_station_id)) {
 			remote_station_id = ast_strdupa(remote_station_id);
 		}
-		local_station_id = S_OR(pbx_builtin_getvar_helper(chan, "LOCALSTATIONID"), "");
+		local_station_id = AST_JSON_UTF8_VALIDATE(pbx_builtin_getvar_helper(chan, "LOCALSTATIONID"));
 		if (!ast_strlen_zero(local_station_id)) {
 			local_station_id = ast_strdupa(local_station_id);
 		}
@@ -3023,6 +3027,22 @@ static struct ast_frame *fax_gateway_detect_v21(struct fax_gateway *gateway, str
 		enum ast_t38_state state_other;
 		enum ast_t38_state state_active;
 		struct ast_frame *fp;
+		struct ast_fax_session_details *details;
+		int negotiate_both = 0;
+
+		/*
+		 * The default behavior is to wait for the active endpoint to initiate negotiation.
+		 * Find out if this has been overridden. If so, instead of waiting have Asterisk
+		 * initiate the negotiation requests out to both endpoints.
+		 */
+		details = find_or_create_details(active);
+		if (details) {
+			negotiate_both = details->negotiate_both;
+			ao2_ref(details, -1);
+		} else {
+			ast_log(LOG_WARNING, "Detect v21 - no session details for channel '%s'\n",
+					ast_channel_name(chan));
+		}
 
 		destroy_v21_sessions(gateway);
 
@@ -3039,7 +3059,7 @@ static struct ast_frame *fax_gateway_detect_v21(struct fax_gateway *gateway, str
 			}
 			/* May be called endpoint is improperly configured to rely on the calling endpoint
 			 * to initiate T.38 re-INVITEs, send T.38 negotiation request to called endpoint */
-			if (state_active == T38_STATE_UNKNOWN) {
+			if (negotiate_both && state_active == T38_STATE_UNKNOWN) {
 				ast_debug(1, "sending T.38 negotiation request to %s\n", ast_channel_name(active));
 				if (active == chan) {
 					ast_channel_unlock(chan);
@@ -3422,6 +3442,15 @@ static struct ast_frame *fax_gateway_framehook(struct ast_channel *chan, struct 
 	if (!gateway->bridged) {
 		enum ast_t38_state state_chan;
 		enum ast_t38_state state_peer;
+		int chan_is_hungup;
+		int peer_is_hungup;
+
+		chan_is_hungup = ast_check_hangup(chan);
+		peer_is_hungup = ast_check_hangup(peer);
+		/* Don't start a gateway if either channel is hung up */
+		if (chan_is_hungup || peer_is_hungup) {
+			return f;
+		}
 
 		ast_channel_unlock(chan);
 		state_chan = ast_channel_get_t38_state(chan);
@@ -3548,7 +3577,7 @@ static struct ast_frame *fax_gateway_framehook(struct ast_channel *chan, struct 
 		 * translation is done, so we need to translate here */
 		if ((f->frametype == AST_FRAME_VOICE) && (ast_format_cmp(f->subclass.format, ast_format_slin) != AST_FORMAT_CMP_EQUAL)
 			&& (readtrans = ast_channel_readtrans(active))) {
-			if ((f = ast_translate(readtrans, f, 1)) == NULL) {
+			if ((f = ast_translate(readtrans, f, event == AST_FRAMEHOOK_EVENT_WRITE ? 0 : 1)) == NULL) {
 				f = &ast_null_frame;
 				return f;
 			}
@@ -4557,6 +4586,8 @@ static int acf_faxopt_read(struct ast_channel *chan, const char *cmd, char *data
 		ast_fax_modem_to_str(details->modems, buf, len);
 	} else if (!strcasecmp(data, "t38timeout")) {
 		snprintf(buf, len, "%u", details->t38timeout);
+	} else if (!strcasecmp(data, "negotiate_both")) {
+		ast_copy_string(buf, details->negotiate_both != -1 ? "yes" : "no", len);
 	} else {
 		ast_log(LOG_WARNING, "channel '%s' can't read FAXOPT(%s) because it is unhandled!\n", ast_channel_name(chan), data);
 		res = -1;
@@ -4695,6 +4726,8 @@ static int acf_faxopt_write(struct ast_channel *chan, const char *cmd, char *dat
 		}
 	} else if ((!strcasecmp(data, "modem")) || (!strcasecmp(data, "modems"))) {
 		update_modem_bits(&details->modems, value);
+	} else if (!strcasecmp(data, "negotiate_both")) {
+		details->negotiate_both = ast_true(ast_skip_blanks(value));
 	} else {
 		ast_log(LOG_WARNING, "channel '%s' set FAXOPT(%s) to '%s' is unhandled!\n", ast_channel_name(chan), data, value);
 		res = -1;
@@ -4706,7 +4739,7 @@ static int acf_faxopt_write(struct ast_channel *chan, const char *cmd, char *dat
 }
 
 /*! \brief FAXOPT dialplan function */
-struct ast_custom_function acf_faxopt = {
+static struct ast_custom_function acf_faxopt = {
 	.name = "FAXOPT",
 	.read = acf_faxopt_read,
 	.write = acf_faxopt_write,

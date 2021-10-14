@@ -255,11 +255,52 @@ static struct t38_state *t38_state_get_or_alloc(struct ast_sip_session *session)
 /*! \brief Initializes UDPTL support on a session, only done when actually needed */
 static int t38_initialize_session(struct ast_sip_session *session, struct ast_sip_session_media *session_media)
 {
+	struct ast_sockaddr temp_media_address;
+	struct ast_sockaddr *media_address = &address;
+
 	if (session_media->udptl) {
 		return 0;
 	}
 
-	if (!(session_media->udptl = ast_udptl_new_with_bindaddr(NULL, NULL, 0, &address))) {
+	if (session->endpoint->media.t38.bind_udptl_to_media_address && !ast_strlen_zero(session->endpoint->media.address)) {
+		if (ast_sockaddr_parse(&temp_media_address, session->endpoint->media.address, 0)) {
+			ast_debug(5, "Endpoint %s: Binding UDPTL media to %s\n",
+				ast_sorcery_object_get_id(session->endpoint),
+				session->endpoint->media.address);
+			media_address = &temp_media_address;
+		} else {
+			ast_debug(5, "Endpoint %s: UDPTL media address invalid: %s\n",
+				ast_sorcery_object_get_id(session->endpoint),
+				session->endpoint->media.address);
+		}
+	} else {
+		struct ast_sip_transport *transport;
+
+		transport = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), "transport",
+				session->endpoint->transport);
+		if (transport) {
+			struct ast_sip_transport_state *trans_state;
+
+			trans_state = ast_sip_get_transport_state(ast_sorcery_object_get_id(transport));
+			if (trans_state) {
+				char hoststr[PJ_INET6_ADDRSTRLEN];
+
+				pj_sockaddr_print(&trans_state->host, hoststr, sizeof(hoststr), 0);
+				if (ast_sockaddr_parse(&temp_media_address, hoststr, 0)) {
+					ast_debug(5, "Transport %s bound to %s: Using it for UDPTL media.\n",
+						session->endpoint->transport, hoststr);
+					media_address = &temp_media_address;
+				} else {
+					ast_debug(5, "Transport %s bound to %s: Invalid for UDPTL media.\n",
+						session->endpoint->transport, hoststr);
+				}
+				ao2_ref(trans_state, -1);
+			}
+			ao2_ref(transport, -1);
+		}
+	}
+
+	if (!(session_media->udptl = ast_udptl_new_with_bindaddr(NULL, NULL, 0, media_address))) {
 		return -1;
 	}
 
@@ -320,6 +361,15 @@ static int t38_reinvite_response_cb(struct ast_sip_session *session, pjsip_rx_da
 		int index;
 
 		session_media = session->active_media_state->default_session[AST_MEDIA_TYPE_IMAGE];
+
+		/*
+		 * If there is a session_media object, but no udptl object available
+		 * then it's assumed the stream was declined.
+		 */
+		if (session_media && !session_media->udptl) {
+			session_media = NULL;
+		}
+
 		if (!session_media) {
 			ast_log(LOG_WARNING, "Received %d response to T.38 re-invite on '%s' but no active session media\n",
 					status.code, session->channel ? ast_channel_name(session->channel) : "unknown channel");
@@ -537,13 +587,13 @@ static struct ast_frame *t38_framehook(struct ast_channel *chan, struct ast_fram
 	if (f->frametype == AST_FRAME_CONTROL
 		&& f->subclass.integer == AST_CONTROL_T38_PARAMETERS) {
 		if (channel->session->endpoint->media.t38.enabled) {
-			struct t38_parameters_task_data *data;
+			struct t38_parameters_task_data *task_data;
 
-			data = t38_parameters_task_data_alloc(channel->session, f);
-			if (data
+			task_data = t38_parameters_task_data_alloc(channel->session, f);
+			if (task_data
 				&& ast_sip_push_task(channel->session->serializer,
-					t38_interpret_parameters, data)) {
-				ao2_ref(data, -1);
+					t38_interpret_parameters, task_data)) {
+				ao2_ref(task_data, -1);
 			}
 		} else {
 			static const struct ast_control_t38_parameters rsp_refused = {
@@ -740,12 +790,32 @@ static void t38_interpret_sdp(struct t38_state *state, struct ast_sip_session *s
 				state->their_parms.rate_management = AST_T38_RATE_MANAGEMENT_TRANSFERRED_TCF;
 			}
 		} else if (!pj_stricmp2(&attr->name, "t38faxudpec")) {
-			if (!pj_stricmp2(&attr->value, "t38UDPRedundancy")) {
-				ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_REDUNDANCY);
-			} else if (!pj_stricmp2(&attr->value, "t38UDPFEC")) {
-				ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_FEC);
+			if (session->t38state == T38_LOCAL_REINVITE) {
+				if (session->endpoint->media.t38.error_correction == UDPTL_ERROR_CORRECTION_FEC) {
+					if (!pj_stricmp2(&attr->value, "t38UDPFEC")) {
+						ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_FEC);
+					} else if (!pj_stricmp2(&attr->value, "t38UDPRedundancy")) {
+						ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_REDUNDANCY);
+					} else {
+						ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_NONE);
+					}
+				} else if (session->endpoint->media.t38.error_correction == UDPTL_ERROR_CORRECTION_REDUNDANCY) {
+					if (!pj_stricmp2(&attr->value, "t38UDPRedundancy")) {
+						ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_REDUNDANCY);
+					} else {
+						ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_NONE);
+					}
+				} else {
+					ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_NONE);
+				}
 			} else {
-				ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_NONE);
+				if (!pj_stricmp2(&attr->value, "t38UDPRedundancy")) {
+					ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_REDUNDANCY);
+				} else if (!pj_stricmp2(&attr->value, "t38UDPFEC")) {
+					ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_FEC);
+				} else {
+					ast_udptl_set_error_correction_scheme(session_media->udptl, UDPTL_ERROR_CORRECTION_NONE);
+				}
 			}
 		}
 

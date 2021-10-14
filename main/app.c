@@ -81,6 +81,9 @@ struct zombie {
 
 static AST_LIST_HEAD_STATIC(zombies, zombie);
 
+#ifdef HAVE_CAP
+static cap_t child_cap;
+#endif
 /*
  * @{ \brief Define \ref stasis topic objects
  */
@@ -190,8 +193,25 @@ int ast_app_dtget(struct ast_channel *chan, const char *context, char *collect, 
  * \param s The string to read in to.  Must be at least the size of your length
  * \param maxlen How many digits to read (maximum)
  * \param timeout set timeout to 0 for "standard" timeouts. Set timeout to -1 for
- *      "ludicrous time" (essentially never times out) */
+ *      "ludicrous time" (essentially never times out)
+ */
 enum ast_getdata_result ast_app_getdata(struct ast_channel *c, const char *prompt, char *s, int maxlen, int timeout)
+{
+	return ast_app_getdata_terminator(c, prompt, s, maxlen, timeout, NULL);
+}
+
+/*!
+ * \brief ast_app_getdata
+ * \param c The channel to read from
+ * \param prompt The file to stream to the channel
+ * \param s The string to read in to.  Must be at least the size of your length
+ * \param maxlen How many digits to read (maximum)
+ * \param timeout set timeout to 0 for "standard" timeouts. Set timeout to -1 for
+ *      "ludicrous time" (essentially never times out)
+ * \param terminator A string of characters that may be used as terminators to end input. Default if NULL is "#"
+ */
+enum ast_getdata_result ast_app_getdata_terminator(struct ast_channel *c, const char *prompt, char *s,
+	int maxlen, int timeout, char *terminator)
 {
 	int res = 0, to, fto;
 	char *front, *filename;
@@ -229,7 +249,7 @@ enum ast_getdata_result ast_app_getdata(struct ast_channel *c, const char *promp
 			fto = 50;
 			to = ast_channel_pbx(c) ? ast_channel_pbx(c)->dtimeoutms : 2000;
 		}
-		res = ast_readstring(c, s, maxlen, to, fto, "#");
+		res = ast_readstring(c, s, maxlen, to, fto, S_OR(terminator, "#"));
 		if (res == AST_GETDATA_EMPTY_END_TERMINATED) {
 			return res;
 		}
@@ -1504,7 +1524,7 @@ static int __ast_play_and_record(struct ast_channel *chan, const char *playfile,
 	char comment[256];
 	int x, fmtcnt = 1, res = -1, outmsg = 0;
 	struct ast_filestream *others[AST_MAX_FORMATS];
-	char *sfmt[AST_MAX_FORMATS];
+	const char *sfmt[AST_MAX_FORMATS];
 	char *stringp = NULL;
 	time_t start, end;
 	struct ast_dsp *sildet = NULL;   /* silence detector dsp */
@@ -1579,7 +1599,12 @@ static int __ast_play_and_record(struct ast_channel *chan, const char *playfile,
 			ast_log(LOG_WARNING, "Please increase AST_MAX_FORMATS in file.h\n");
 			break;
 		}
-		sfmt[fmtcnt++] = ast_strdupa(fmt);
+		/*
+		 * Storage for 'fmt' is on the stack and held by 'fmts', which is maintained for
+		 * the rest of this function. So okay to not duplicate 'fmt' here, but only keep
+		 * a pointer to it.
+		 */
+		sfmt[fmtcnt++] = fmt;
 	}
 
 	end = start = time(NULL);  /* pre-initialize end to be same as start in case we never get into loop */
@@ -2998,12 +3023,7 @@ int ast_safe_fork(int stop_reaper)
 	} else {
 		/* Child */
 #ifdef HAVE_CAP
-		cap_t cap = cap_from_text("cap_net_admin-eip");
-
-		if (cap_set_proc(cap)) {
-			ast_log(LOG_WARNING, "Unable to remove capabilities.\n");
-		}
-		cap_free(cap);
+		cap_set_proc(child_cap);
 #endif
 
 		/* Before we unblock our signals, return our trapped signals back to the defaults */
@@ -3113,6 +3133,9 @@ struct stasis_topic *ast_queue_topic(const char *queuename)
 
 static void app_cleanup(void)
 {
+#ifdef HAS_CAP
+	cap_free(child_cap);
+#endif
 	ao2_cleanup(queue_topic_pool);
 	queue_topic_pool = NULL;
 	ao2_cleanup(queue_topic_all);
@@ -3122,7 +3145,9 @@ static void app_cleanup(void)
 int app_init(void)
 {
 	ast_register_cleanup(app_cleanup);
-
+#ifdef HAVE_CAP
+	child_cap = cap_from_text("cap_net_admin-eip");
+#endif
 	queue_topic_all = stasis_topic_create("queue:all");
 	if (!queue_topic_all) {
 		return -1;

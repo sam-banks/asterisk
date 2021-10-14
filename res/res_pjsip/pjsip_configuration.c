@@ -34,6 +34,8 @@
 #include "asterisk/statsd.h"
 #include "asterisk/pbx.h"
 #include "asterisk/stream.h"
+#include "asterisk/stasis.h"
+#include "asterisk/security_events.h"
 
 /*! \brief Number of buckets for persistent endpoint information */
 #define PERSISTENT_BUCKETS 53
@@ -48,6 +50,8 @@ struct sip_persistent_endpoint {
 static struct ao2_container *persistent_endpoints;
 
 static struct ast_sorcery *sip_sorcery;
+
+static struct stasis_subscription *acl_change_sub;
 
 /*! \brief Hashing function for persistent endpoint information */
 static int persistent_endpoint_hash(const void *obj, const int flags)
@@ -1117,6 +1121,165 @@ static int contact_user_to_str(const void *obj, const intptr_t *args, char **buf
 	return 0;
 }
 
+static int call_offer_pref_handler(const struct aco_option *opt,
+	struct ast_variable *var, void *obj)
+{
+	struct ast_sip_endpoint *endpoint = obj;
+	struct ast_flags pref = { 0, };
+	int outgoing = strcmp(var->name, "outgoing_call_offer_pref") == 0;
+
+	int res = ast_sip_call_codec_str_to_pref(&pref, var->value, outgoing);
+	if (res != 0) {
+		return -1;
+	}
+
+	if (outgoing) {
+		endpoint->media.outgoing_call_offer_pref = pref;
+	} else {
+		endpoint->media.incoming_call_offer_pref = pref;
+	}
+
+	return 0;
+}
+
+static int incoming_call_offer_pref_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_endpoint *endpoint = obj;
+
+	*buf = ast_strdup(ast_sip_call_codec_pref_to_str(endpoint->media.incoming_call_offer_pref));
+	if (!(*buf)) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static int outgoing_call_offer_pref_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_endpoint *endpoint = obj;
+
+	*buf = ast_strdup(ast_sip_call_codec_pref_to_str(endpoint->media.outgoing_call_offer_pref));
+	if (!(*buf)) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static int codec_prefs_handler(const struct aco_option *opt,
+	struct ast_variable *var, void *obj)
+{
+	struct ast_sip_endpoint *endpoint = obj;
+	struct ast_stream_codec_negotiation_prefs *option_prefs;
+	struct ast_stream_codec_negotiation_prefs prefs;
+	struct ast_str *error_message = ast_str_create(128);
+	enum ast_stream_codec_negotiation_prefs_prefer_values default_prefer;
+	enum ast_stream_codec_negotiation_prefs_operation_values default_operation;
+	int res = 0;
+
+	res = ast_stream_codec_prefs_parse(var->value, &prefs, &error_message);
+	if (res < 0) {
+		ast_log(LOG_ERROR, "Endpoint '%s': %s for option '%s'\n",
+			ast_sorcery_object_get_id(endpoint), ast_str_buffer(error_message), var->name);
+		ast_free(error_message);
+		return -1;
+	}
+	ast_free(error_message);
+
+	if (strcmp(var->name, "codec_prefs_incoming_offer") == 0) {
+		if (prefs.operation == CODEC_NEGOTIATION_OPERATION_UNION) {
+			ast_log(LOG_ERROR, "Endpoint '%s': Codec preference '%s' has invalid value '%s' for option: '%s'",
+				ast_sorcery_object_get_id(endpoint),
+				ast_stream_codec_param_to_str(CODEC_NEGOTIATION_PARAM_OPERATION),
+				ast_stream_codec_operation_to_str(CODEC_NEGOTIATION_OPERATION_UNION),
+				var->name);
+			return -1;
+		}
+		option_prefs = &endpoint->media.codec_prefs_incoming_offer;
+		default_prefer = CODEC_NEGOTIATION_PREFER_PENDING;
+		default_operation = CODEC_NEGOTIATION_OPERATION_INTERSECT;
+	} else if (strcmp(var->name, "codec_prefs_outgoing_offer") == 0) {
+		option_prefs = &endpoint->media.codec_prefs_outgoing_offer;
+		default_prefer = CODEC_NEGOTIATION_PREFER_PENDING;
+		default_operation = CODEC_NEGOTIATION_OPERATION_UNION;
+	} else if (strcmp(var->name, "codec_prefs_incoming_answer") == 0) {
+		option_prefs = &endpoint->media.codec_prefs_incoming_answer;
+		default_prefer = CODEC_NEGOTIATION_PREFER_PENDING;
+		default_operation = CODEC_NEGOTIATION_OPERATION_INTERSECT;
+	} else if (strcmp(var->name, "codec_prefs_outgoing_answer") == 0) {
+		option_prefs = &endpoint->media.codec_prefs_outgoing_answer;
+		default_prefer = CODEC_NEGOTIATION_PREFER_PENDING;
+		default_operation = CODEC_NEGOTIATION_OPERATION_INTERSECT;
+	} else {
+		ast_log(LOG_ERROR, "Endpoint '%s': Unsupported option '%s'\n",
+			ast_sorcery_object_get_id(endpoint),
+			var->name);
+		return -1;
+	}
+
+	if (prefs.prefer == CODEC_NEGOTIATION_PREFER_UNSPECIFIED) {
+		prefs.prefer = default_prefer;
+	}
+
+	if (prefs.operation == CODEC_NEGOTIATION_OPERATION_UNSPECIFIED) {
+		prefs.operation = default_operation;
+	}
+
+	if (prefs.keep == CODEC_NEGOTIATION_KEEP_UNSPECIFIED) {
+		prefs.keep = CODEC_NEGOTIATION_KEEP_ALL;
+	}
+
+	if (prefs.transcode == CODEC_NEGOTIATION_TRANSCODE_UNSPECIFIED) {
+		prefs.transcode = CODEC_NEGOTIATION_TRANSCODE_ALLOW;
+	}
+
+	/* Now that defaults have been applied as needed we apply the full codec
+	 * preference configuration to the option.
+	 */
+	*option_prefs = prefs;
+
+	return 0;
+}
+
+static int codec_prefs_to_str(const struct ast_stream_codec_negotiation_prefs *prefs,
+	const void *obj, const intptr_t *args, char **buf)
+{
+	struct ast_str *codecs = ast_str_create(AST_STREAM_MAX_CODEC_PREFS_LENGTH);
+
+	if (!codecs) {
+		return -1;
+	}
+
+	*buf = ast_strdup(ast_stream_codec_prefs_to_str(prefs, &codecs));
+	ast_free(codecs);
+
+	return 0;
+}
+
+static int incoming_offer_codec_prefs_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_endpoint *endpoint = obj;
+	return codec_prefs_to_str(&endpoint->media.codec_prefs_incoming_offer, obj, args, buf);
+}
+
+static int outgoing_offer_codec_prefs_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_endpoint *endpoint = obj;
+	return codec_prefs_to_str(&endpoint->media.codec_prefs_outgoing_offer, obj, args, buf);
+}
+
+static int incoming_answer_codec_prefs_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_endpoint *endpoint = obj;
+	return codec_prefs_to_str(&endpoint->media.codec_prefs_incoming_answer, obj, args, buf);
+}
+
+static int outgoing_answer_codec_prefs_to_str(const void *obj, const intptr_t *args, char **buf)
+{
+	const struct ast_sip_endpoint *endpoint = obj;
+	return codec_prefs_to_str(&endpoint->media.codec_prefs_outgoing_answer, obj, args, buf);
+}
+
 static void *sip_nat_hook_alloc(const char *name)
 {
 	return ast_sorcery_generic_alloc(sizeof(struct ast_sip_nat_hook), NULL);
@@ -1297,6 +1460,16 @@ static int sip_endpoint_apply_handler(const struct ast_sorcery *sorcery, void *o
 
 	if (ast_rtp_dtls_cfg_validate(&endpoint->media.rtp.dtls_cfg)) {
 		return -1;
+	}
+
+	if (endpoint->preferred_codec_only) {
+		if (endpoint->media.incoming_call_offer_pref.flags != (AST_SIP_CALL_CODEC_PREF_LOCAL | AST_SIP_CALL_CODEC_PREF_INTERSECT | AST_SIP_CALL_CODEC_PREF_ALL)) {
+			ast_log(LOG_ERROR, "Setting both preferred_codec_only and incoming_call_offer_pref is not supported on endpoint '%s'\n",
+				ast_sorcery_object_get_id(endpoint));
+			return -1;
+		}
+		ast_clear_flag(&endpoint->media.incoming_call_offer_pref, AST_SIP_CALL_CODEC_PREF_ALL);
+		ast_set_flag(&endpoint->media.incoming_call_offer_pref, AST_SIP_CALL_CODEC_PREF_FIRST);
 	}
 
 	endpoint->media.topology = ast_stream_topology_create_from_format_cap(endpoint->media.codecs);
@@ -1787,6 +1960,16 @@ static void load_all_endpoints(void)
 	ao2_cleanup(endpoints);
 }
 
+static void acl_change_stasis_cb(void *data, struct stasis_subscription *sub,
+	struct stasis_message *message)
+{
+	if (stasis_message_type(message) != ast_named_acl_change_type()) {
+		return;
+	}
+
+	ast_sorcery_force_reload_object(sip_sorcery, "endpoint");
+}
+
 int ast_res_pjsip_initialize_configuration(void)
 {
 	if (ast_manager_register_xml(AMI_SHOW_ENDPOINTS, EVENT_FLAG_SYSTEM, ami_show_endpoints) ||
@@ -1868,6 +2051,7 @@ int ast_res_pjsip_initialize_configuration(void)
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "send_rpid", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, id.send_rpid));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "rpid_immediate", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, id.rpid_immediate));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "send_diversion", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, id.send_diversion));
+	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "send_history_info", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, id.send_history_info));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "mailboxes", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, subscription.mwi.mailboxes));
 	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "voicemail_extension", "", voicemail_extension_handler, voicemail_extension_to_str, NULL, 0, 0);
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "aggregate_mwi", "yes", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, subscription.mwi.aggregate));
@@ -1893,6 +2077,7 @@ int ast_res_pjsip_initialize_configuration(void)
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "fax_detect_timeout", "0", OPT_UINT_T, 0, FLDSET(struct ast_sip_endpoint, faxdetect_timeout));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "t38_udptl_nat", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, media.t38.nat));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "t38_udptl_ipv6", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, media.t38.ipv6));
+	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "t38_bind_udptl_to_media_address", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, media.t38.bind_udptl_to_media_address));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "tone_zone", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, zone));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "language", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, language));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "record_on_feature", "automixmon", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_endpoint, info.recording.onfeature));
@@ -1952,6 +2137,24 @@ int ast_res_pjsip_initialize_configuration(void)
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "accept_multiple_sdp_answers", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, media.rtp.accept_multiple_sdp_answers));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "suppress_q850_reason_headers", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, suppress_q850_reason_headers));
 	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "ignore_183_without_sdp", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, ignore_183_without_sdp));
+	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "incoming_call_offer_pref", "local",
+		call_offer_pref_handler, incoming_call_offer_pref_to_str, NULL, 0, 0);
+	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "outgoing_call_offer_pref", "remote_merge",
+		call_offer_pref_handler, outgoing_call_offer_pref_to_str, NULL, 0, 0);
+	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "codec_prefs_incoming_offer",
+		"prefer: pending, operation: intersect, keep: all, transcode: allow",
+		codec_prefs_handler, incoming_offer_codec_prefs_to_str, NULL, 0, 0);
+	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "codec_prefs_outgoing_offer",
+		"prefer: pending, operation: union, keep: all, transcode: allow",
+		codec_prefs_handler, outgoing_offer_codec_prefs_to_str, NULL, 0, 0);
+	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "codec_prefs_incoming_answer",
+		"prefer: pending, operation: intersect, keep: all",
+		codec_prefs_handler, incoming_answer_codec_prefs_to_str, NULL, 0, 0);
+	ast_sorcery_object_field_register_custom(sip_sorcery, "endpoint", "codec_prefs_outgoing_answer",
+		"prefer: pending, operation: intersect, keep: all",
+		codec_prefs_handler, outgoing_answer_codec_prefs_to_str, NULL, 0, 0);
+	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "stir_shaken", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, stir_shaken));
+	ast_sorcery_object_field_register(sip_sorcery, "endpoint", "allow_unauthenticated_options", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_endpoint, allow_unauthenticated_options));
 
 	if (ast_sip_initialize_sorcery_transport()) {
 		ast_log(LOG_ERROR, "Failed to register SIP transport support with sorcery\n");
@@ -2007,6 +2210,10 @@ int ast_res_pjsip_initialize_configuration(void)
 
 	ast_sip_location_prune_boot_contacts();
 
+	acl_change_sub = stasis_subscribe(ast_security_topic(), acl_change_stasis_cb, NULL);
+	stasis_subscription_accept_message_type(acl_change_sub, ast_named_acl_change_type());
+	stasis_subscription_set_filter(acl_change_sub, STASIS_SUBSCRIPTION_FILTER_SELECTIVE);
+
 	return 0;
 }
 
@@ -2016,6 +2223,7 @@ void ast_res_pjsip_destroy_configuration(void)
 		return;
 	}
 
+	acl_change_sub = stasis_unsubscribe_and_join(acl_change_sub);
 	ast_sip_destroy_sorcery_global();
 	ast_sip_destroy_sorcery_location();
 	ast_sip_destroy_sorcery_auth();
@@ -2173,6 +2381,25 @@ void ast_sip_cleanup_auths(struct ast_sip_auth *auths[], size_t num_auths)
 	for (i = 0; i < num_auths; ++i) {
 		ao2_cleanup(auths[i]);
 	}
+}
+
+int ast_sip_retrieve_auths_vector(const struct ast_sip_auth_vector *auth_ids,
+	struct ast_sip_auth_objects_vector *auth_objects)
+{
+	int i;
+
+	for (i = 0; i < AST_VECTOR_SIZE(auth_ids); ++i) {
+		/* Using AST_VECTOR_GET is safe since the vector is immutable */
+		const char *name = AST_VECTOR_GET(auth_ids, i);
+		struct ast_sip_auth *auth_object = ast_sorcery_retrieve_by_id(ast_sip_get_sorcery(), SIP_SORCERY_AUTH_TYPE, name);
+		if (!auth_object) {
+			ast_log(LOG_WARNING, "Auth object '%s' could not be found\n", name);
+		} else {
+			AST_VECTOR_APPEND(auth_objects, auth_object);
+		}
+	}
+
+	return AST_VECTOR_SIZE(auth_objects) == AST_VECTOR_SIZE(auth_ids) ? 0 : -1;
 }
 
 struct ast_sorcery *ast_sip_get_sorcery(void)

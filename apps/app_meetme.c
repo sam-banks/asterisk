@@ -41,8 +41,10 @@
 /*** MODULEINFO
 	<depend>dahdi</depend>
 	<defaultenabled>no</defaultenabled>
-	<support_level>extended</support_level>
+	<support_level>deprecated</support_level>
 	<replacement>app_confbridge</replacement>
+	<deprecated_in>19</deprecated_in>
+	<removed_in>21</removed_in>
  ***/
 
 #include "asterisk.h"
@@ -1165,7 +1167,7 @@ static int meetme_stasis_init(void)
 	STASIS_MESSAGE_TYPE_INIT(meetme_talk_request_type);
 
 	meetme_event_message_router = stasis_message_router_create(
-		ast_channel_topic_all_cached());
+		ast_channel_topic_all());
 
 	if (!meetme_event_message_router) {
 		meetme_stasis_cleanup();
@@ -8076,7 +8078,7 @@ static int reload(void)
 }
 
 AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_LOAD_ORDER, "MeetMe conference bridge",
-	.support_level = AST_MODULE_SUPPORT_EXTENDED,
+	.support_level = AST_MODULE_SUPPORT_DEPRECATED,
 	.load = load_module,
 	.unload = unload_module,
 	.reload = reload,

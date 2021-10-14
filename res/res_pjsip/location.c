@@ -1339,6 +1339,29 @@ static int contact_apply_handler(const struct ast_sorcery *sorcery, void *object
 	return status ? 0 : -1;
 }
 
+static int aor_apply_outbound_proxy(void *obj, void *arg, int flags)
+{
+	struct ast_sip_contact *contact = obj;
+	struct ast_sip_aor *aor = arg;
+
+	ast_string_field_set(contact, outbound_proxy, aor->outbound_proxy);
+
+	return 0;
+}
+
+static int aor_apply_handler(const struct ast_sorcery *sorcery, void *object)
+{
+	struct ast_sip_aor *aor = object;
+
+	if (!aor->permanent_contacts || ast_strlen_zero(aor->outbound_proxy)) {
+		return 0;
+	}
+
+	ao2_callback(aor->permanent_contacts, OBJ_NODATA | OBJ_MULTIPLE, aor_apply_outbound_proxy, aor);
+
+	return 0;
+}
+
 /*! \brief Initialize sorcery with location support */
 int ast_sip_initialize_sorcery_location(void)
 {
@@ -1355,7 +1378,7 @@ int ast_sip_initialize_sorcery_location(void)
 	ast_sorcery_apply_default(sorcery, "aor", "config", "pjsip.conf,criteria=type=aor");
 
 	if (ast_sorcery_object_register(sorcery, "contact", contact_alloc, NULL, contact_apply_handler) ||
-		ast_sorcery_object_register(sorcery, "aor", aor_alloc, NULL, NULL)) {
+		ast_sorcery_object_register(sorcery, "aor", aor_alloc, NULL, aor_apply_handler)) {
 		return -1;
 	}
 
@@ -1387,6 +1410,7 @@ int ast_sip_initialize_sorcery_location(void)
 	ast_sorcery_object_field_register(sorcery, "aor", "authenticate_qualify", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_aor, authenticate_qualify));
 	ast_sorcery_object_field_register(sorcery, "aor", "max_contacts", "0", OPT_UINT_T, 0, FLDSET(struct ast_sip_aor, max_contacts));
 	ast_sorcery_object_field_register(sorcery, "aor", "remove_existing", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_aor, remove_existing));
+	ast_sorcery_object_field_register(sorcery, "aor", "remove_unavailable", "no", OPT_BOOL_T, 1, FLDSET(struct ast_sip_aor, remove_unavailable));
 	ast_sorcery_object_field_register_custom(sorcery, "aor", "contact", "", permanent_uri_handler, contacts_to_str, contacts_to_var_list, 0, 0);
 	ast_sorcery_object_field_register(sorcery, "aor", "mailboxes", "", OPT_STRINGFIELD_T, 0, STRFLDSET(struct ast_sip_aor, mailboxes));
 	ast_sorcery_object_field_register_custom(sorcery, "aor", "voicemail_extension", "", voicemail_extension_handler, voicemail_extension_to_str, NULL, 0, 0);

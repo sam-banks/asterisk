@@ -126,70 +126,30 @@ static void media_cache_item_del_from_astdb(struct ast_bucket_file *bucket_file)
 
 /*!
  * \internal
- * \brief Normalize the value of a Content-Type header
- *
- * This will trim off any optional parameters after the type/subtype.
- */
-static void normalize_content_type_header(char *content_type)
-{
-	char *params = strchr(content_type, ';');
-
-	if (params) {
-		*params-- = 0;
-		while (params > content_type && (*params == ' ' || *params == '\t')) {
-			*params-- = 0;
-		}
-	}
-}
-
-/*!
- * \internal
  * \brief Update the name of the file backing a \c bucket_file
  * \param preferred_file_name The preferred name of the backing file
  */
 static void bucket_file_update_path(struct ast_bucket_file *bucket_file,
 	const char *preferred_file_name)
 {
-	char *ext;
-
 	if (!ast_strlen_zero(preferred_file_name) && strcmp(bucket_file->path, preferred_file_name)) {
 		/* Use the preferred file name if available */
-
 		rename(bucket_file->path, preferred_file_name);
 		ast_copy_string(bucket_file->path, preferred_file_name,
 			sizeof(bucket_file->path));
-	} else if (!strchr(bucket_file->path, '.') && (ext = strrchr(ast_sorcery_object_get_id(bucket_file), '.'))) {
-		/* If we don't have a file extension and were provided one in the URI, use it */
-		char found_ext[32];
-		char new_path[PATH_MAX + sizeof(found_ext)];
+	} else if (!strchr(bucket_file->path, '.')) {
+		struct ast_bucket_metadata *ext =
+			ast_bucket_file_metadata_get(bucket_file, "ext");
 
-		ast_bucket_file_metadata_set(bucket_file, "ext", ext);
-
-		/* Don't pass '.' while checking for supported extension */
-		if (!ast_get_format_for_file_ext(ext + 1)) {
-			/* If the file extension passed in the URI isn't supported check for the
-			 * extension based on the MIME type passed in the Content-Type header before
-			 * giving up.
-			 * If a match is found then retrieve the extension from the supported list
-			 * corresponding to the mime-type and use that to rename the file */
-			struct ast_bucket_metadata *header = ast_bucket_file_metadata_get(bucket_file, "content-type");
-			if (header) {
-				char *mime_type = ast_strdup(header->value);
-				if (mime_type) {
-					normalize_content_type_header(mime_type);
-					if (!ast_strlen_zero(mime_type)) {
-						if (ast_get_extension_for_mime_type(mime_type, found_ext, sizeof(found_ext))) {
-							ext = found_ext;
-						}
-					}
-					ast_free(mime_type);
-				}
+		if (ext) {
+			char *new_path;
+			if (ast_asprintf(&new_path, "%s%s", bucket_file->path, ext->value) != -1) {
+				rename(bucket_file->path, new_path);
+				ast_copy_string(bucket_file->path, new_path, sizeof(bucket_file->path));
+				ast_free(new_path);
 			}
+			ao2_ref(ext, -1);
 		}
-
-		snprintf(new_path, sizeof(new_path), "%s%s", bucket_file->path, ext);
-		rename(bucket_file->path, new_path);
-		ast_copy_string(bucket_file->path, new_path, sizeof(bucket_file->path));
 	}
 }
 
@@ -197,12 +157,14 @@ int ast_media_cache_retrieve(const char *uri, const char *preferred_file_name,
 	char *file_path, size_t len)
 {
 	struct ast_bucket_file *bucket_file;
+	struct ast_bucket_file *tmp_bucket_file;
 	char *ext;
-	SCOPED_AO2LOCK(media_lock, media_cache);
-
 	if (ast_strlen_zero(uri)) {
 		return -1;
 	}
+
+	ao2_lock(media_cache);
+	ast_debug(5, "Looking for media at local cache, file: %s\n", uri);
 
 	/* First, retrieve from the ao2 cache here. If we find a bucket_file
 	 * matching the requested URI, ask the appropriate backend if it is
@@ -219,6 +181,7 @@ int ast_media_cache_retrieve(const char *uri, const char *preferred_file_name,
 			ao2_ref(bucket_file, -1);
 
 			ast_debug(5, "Returning media at local file: %s\n", file_path);
+			ao2_unlock(media_cache);
 			return 0;
 		}
 
@@ -227,6 +190,10 @@ int ast_media_cache_retrieve(const char *uri, const char *preferred_file_name,
 		ast_bucket_file_delete(bucket_file);
 		ao2_ref(bucket_file, -1);
 	}
+	/* We unlock to retrieve the file, because it can take a long time;
+	 * and we don't want to lock access to cached files while waiting
+	 */
+	ao2_unlock(media_cache);
 
 	/* Either this is new or the resource is stale; do a full retrieve
 	 * from the appropriate bucket_file backend
@@ -235,6 +202,21 @@ int ast_media_cache_retrieve(const char *uri, const char *preferred_file_name,
 	if (!bucket_file) {
 		ast_debug(2, "Failed to obtain media at '%s'\n", uri);
 		return -1;
+	}
+
+	/* we lock again, before updating cache */
+	ao2_lock(media_cache);
+
+	/* We can have duplicated buckets here, we check if already exists
+	 * before saving
+	 */
+	tmp_bucket_file = ao2_find(media_cache, uri, OBJ_SEARCH_KEY | OBJ_NOLOCK);
+	if (tmp_bucket_file) {
+		ao2_ref(tmp_bucket_file, -1);
+		ast_bucket_file_delete(bucket_file);
+		ao2_ref(bucket_file, -1);
+		ao2_unlock(media_cache);
+		return 0;
 	}
 
 	/* We can manipulate the 'immutable' bucket_file here, as we haven't
@@ -250,6 +232,7 @@ int ast_media_cache_retrieve(const char *uri, const char *preferred_file_name,
 	ao2_ref(bucket_file, -1);
 
 	ast_debug(5, "Returning media at local file: %s\n", file_path);
+	ao2_unlock(media_cache);
 
 	return 0;
 }
@@ -493,8 +476,7 @@ static char *media_cache_handle_show_all(struct ast_cli_entry *e, int cmd, struc
 		e->command = "media cache show all";
 		e->usage =
 			"Usage: media cache show all\n"
-			"       Display a summary of all current items\n"
-			"       in the media cache.\n";
+			"       Display a summary of all current items in the media cache.\n";
 		return NULL;
 	case CLI_GENERATE:
 		return NULL;
@@ -515,27 +497,22 @@ static char *media_cache_handle_show_all(struct ast_cli_entry *e, int cmd, struc
  * \internal
  * \brief CLI tab completion function for URIs
  */
-static char *cli_complete_uri(const char *word, int state)
+static char *cli_complete_uri(const char *word)
 {
 	struct ast_bucket_file *bucket_file;
 	struct ao2_iterator it_media_items;
 	int wordlen = strlen(word);
-	int which = 0;
-	char *result = NULL;
 
 	it_media_items = ao2_iterator_init(media_cache, 0);
 	while ((bucket_file = ao2_iterator_next(&it_media_items))) {
-		if (!strncasecmp(word, ast_sorcery_object_get_id(bucket_file), wordlen)
-			&& ++which > state) {
-			result = ast_strdup(ast_sorcery_object_get_id(bucket_file));
+		if (!strncasecmp(word, ast_sorcery_object_get_id(bucket_file), wordlen)) {
+			ast_cli_completion_add(ast_strdup(ast_sorcery_object_get_id(bucket_file)));
 		}
 		ao2_ref(bucket_file, -1);
-		if (result) {
-			break;
-		}
 	}
 	ao2_iterator_destroy(&it_media_items);
-	return result;
+
+	return NULL;
 }
 
 static char *media_cache_handle_show_item(struct ast_cli_entry *e, int cmd, struct ast_cli_args *a)
@@ -550,11 +527,10 @@ static char *media_cache_handle_show_item(struct ast_cli_entry *e, int cmd, stru
 		e->command = "media cache show";
 		e->usage =
 			"Usage: media cache show <uri>\n"
-			"       Display all information about a particular\n"
-			"       item in the media cache.\n";
+			"       Display all information about a particular item in the media cache.\n";
 		return NULL;
 	case CLI_GENERATE:
-		return cli_complete_uri(a->word, a->n);
+		return a->pos == e->args ? cli_complete_uri(a->word) : NULL;
 	}
 
 	if (a->argc != 4) {
@@ -590,14 +566,13 @@ static char *media_cache_handle_delete_item(struct ast_cli_entry *e, int cmd, st
 		e->command = "media cache delete";
 		e->usage =
 			"Usage: media cache delete <uri>\n"
-			"       Delete an item from the media cache.\n"
-			"       Note that this will also remove any local\n"
-			"       storage of the media associated with the URI,\n"
-			"       and will inform the backend supporting the URI\n"
-			"       scheme that it should remove the item.\n";
+			"       Delete an item from the media cache.\n\n"
+			"       Note that this will also remove any local storage of the media associated\n"
+			"       with the URI, and will inform the backend supporting the URI scheme that\n"
+			"       it should remove the item.\n";
 		return NULL;
 	case CLI_GENERATE:
-		return cli_complete_uri(a->word, a->n);
+		return a->pos == e->args ? cli_complete_uri(a->word) : NULL;
 	}
 
 	if (a->argc != 4) {
@@ -622,13 +597,12 @@ static char *media_cache_handle_refresh_item(struct ast_cli_entry *e, int cmd, s
 		e->command = "media cache refresh";
 		e->usage =
 			"Usage: media cache refresh <uri>\n"
-			"       Ask for a refresh of a particular URI.\n"
-			"       If the item does not already exist in the\n"
-			"       media cache, the item will be populated from\n"
-			"       the backend supporting the URI scheme.\n";
+			"       Ask for a refresh of a particular URI.\n\n"
+			"       If the item does not already exist in the media cache, the item will be\n"
+			"       populated from the backend supporting the URI scheme.\n";
 		return NULL;
 	case CLI_GENERATE:
-		return cli_complete_uri(a->word, a->n);
+		return a->pos == e->args ? cli_complete_uri(a->word) : NULL;
 	}
 
 	if (a->argc != 4) {
@@ -651,8 +625,8 @@ static char *media_cache_handle_create_item(struct ast_cli_entry *e, int cmd, st
 		e->command = "media cache create";
 		e->usage =
 			"Usage: media cache create <uri> <file>\n"
-			"       Create an item in the media cache by associating\n"
-			"       a local media file with some URI.\n";
+			"       Create an item in the media cache by associating a local media file with\n"
+			"       some URI.\n";
 		return NULL;
 	case CLI_GENERATE:
 		return NULL;

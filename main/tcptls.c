@@ -37,6 +37,7 @@
 #ifdef DO_SSL
 #include <openssl/asn1.h>               /* for ASN1_STRING_to_UTF8 */
 #include <openssl/crypto.h>             /* for OPENSSL_free */
+#include <openssl/err.h>                /* for ERR_print_errors_fp */
 #include <openssl/opensslconf.h>        /* for OPENSSL_NO_SSL3_METHOD, OPENS... */
 #include <openssl/opensslv.h>           /* for OPENSSL_VERSION_NUMBER */
 #include <openssl/safestack.h>          /* for STACK_OF */
@@ -105,6 +106,27 @@ static int check_tcptls_cert_name(ASN1_STRING *cert_str, const char *hostname, c
 	OPENSSL_free(str);
 
 	return ret;
+}
+
+static void write_openssl_error_to_log(void)
+{
+	FILE *fp;
+	char *buffer;
+	size_t length;
+
+	fp = open_memstream(&buffer, &length);
+	if (!fp) {
+		return;
+	}
+
+	ERR_print_errors_fp(fp);
+	fclose(fp);
+
+	if (length) {
+		ast_log(LOG_ERROR, "%.*s\n", (int) length, buffer);
+	}
+
+	ast_free(buffer);
 }
 #endif
 
@@ -241,7 +263,7 @@ static void *handle_tcptls_connection(void *data)
 			X509_free(peer);
 		}
 #else
-		ast_log(LOG_ERROR, "Attempted a TLS connection without OpenSSL support. This will not work!\n");
+		ast_log(LOG_ERROR, "TLS client failed: Asterisk is compiled without OpenSSL support. Install OpenSSL development headers and rebuild Asterisk after running ./configure\n");
 		ast_tcptls_close_session_file(tcptls_session);
 		ao2_ref(tcptls_session, -1);
 		return NULL;
@@ -345,10 +367,13 @@ static void __ssl_setup_certs(struct ast_tls_config *cfg, const size_t cert_file
 	if (access(cert_file, F_OK) == 0) {
 		if (SSL_CTX_use_certificate_chain_file(cfg->ssl_ctx, cert_file) == 0) {
 			ast_log(LOG_WARNING, "TLS/SSL error loading public %s key (certificate) from <%s>.\n", key_type, cert_file);
+			write_openssl_error_to_log();
 		} else if (SSL_CTX_use_PrivateKey_file(cfg->ssl_ctx, cert_file, SSL_FILETYPE_PEM) == 0) {
 			ast_log(LOG_WARNING, "TLS/SSL error loading private %s key from <%s>.\n", key_type, cert_file);
+			write_openssl_error_to_log();
 		} else if (SSL_CTX_check_private_key(cfg->ssl_ctx) == 0) {
 			ast_log(LOG_WARNING, "TLS/SSL error matching private %s key and certificate in <%s>.\n", key_type, cert_file);
+			write_openssl_error_to_log();
 		}
 	}
 }
@@ -358,7 +383,7 @@ static int __ssl_setup(struct ast_tls_config *cfg, int client)
 {
 #ifndef DO_SSL
 	if (cfg->enabled) {
-		ast_log(LOG_NOTICE, "Configured without OpenSSL Development Headers");
+		ast_log(LOG_ERROR, "TLS server failed: Asterisk is compiled without OpenSSL support. Install OpenSSL development headers and rebuild Asterisk after running ./configure\n");
 		cfg->enabled = 0;
 	}
 	return 0;
@@ -451,6 +476,7 @@ static int __ssl_setup(struct ast_tls_config *cfg, int client)
 			if (!client) {
 				/* Clients don't need a certificate, but if its setup we can use it */
 				ast_log(LOG_ERROR, "TLS/SSL error loading cert file. <%s>\n", cfg->certfile);
+				write_openssl_error_to_log();
 				cfg->enabled = 0;
 				SSL_CTX_free(cfg->ssl_ctx);
 				cfg->ssl_ctx = NULL;
@@ -461,6 +487,7 @@ static int __ssl_setup(struct ast_tls_config *cfg, int client)
 			if (!client) {
 				/* Clients don't need a private key, but if its setup we can use it */
 				ast_log(LOG_ERROR, "TLS/SSL error loading private key file. <%s>\n", tmpprivate);
+				write_openssl_error_to_log();
 				cfg->enabled = 0;
 				SSL_CTX_free(cfg->ssl_ctx);
 				cfg->ssl_ctx = NULL;
@@ -483,6 +510,7 @@ static int __ssl_setup(struct ast_tls_config *cfg, int client)
 		if (SSL_CTX_set_cipher_list(cfg->ssl_ctx, cfg->cipher) == 0 ) {
 			if (!client) {
 				ast_log(LOG_ERROR, "TLS/SSL cipher error <%s>\n", cfg->cipher);
+				write_openssl_error_to_log();
 				cfg->enabled = 0;
 				SSL_CTX_free(cfg->ssl_ctx);
 				cfg->ssl_ctx = NULL;
@@ -493,6 +521,7 @@ static int __ssl_setup(struct ast_tls_config *cfg, int client)
 	if (!ast_strlen_zero(cfg->cafile) || !ast_strlen_zero(cfg->capath)) {
 		if (SSL_CTX_load_verify_locations(cfg->ssl_ctx, S_OR(cfg->cafile, NULL), S_OR(cfg->capath,NULL)) == 0) {
 			ast_log(LOG_ERROR, "TLS/SSL CA file(%s)/path(%s) error\n", cfg->cafile, cfg->capath);
+			write_openssl_error_to_log();
 		}
 	}
 
@@ -579,13 +608,8 @@ struct ast_tcptls_session_instance *ast_tcptls_client_start(struct ast_tcptls_se
 	return handle_tcptls_connection(tcptls_session);
 
 client_start_error:
-	if (desc) {
-		close(desc->accept_fd);
-		desc->accept_fd = -1;
-	}
 	ao2_ref(tcptls_session, -1);
 	return NULL;
-
 }
 
 struct ast_tcptls_session_instance *ast_tcptls_client_create(struct ast_tcptls_session_args *desc)
@@ -601,10 +625,6 @@ struct ast_tcptls_session_instance *ast_tcptls_client_create(struct ast_tcptls_s
 
 	/* If we return early, there is no connection */
 	ast_sockaddr_setnull(&desc->old_address);
-
-	if (desc->accept_fd != -1) {
-		close(desc->accept_fd);
-	}
 
 	fd = desc->accept_fd = socket(ast_sockaddr_is_ipv6(&desc->remote_address) ?
 				      AF_INET6 : AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -642,6 +662,9 @@ struct ast_tcptls_session_instance *ast_tcptls_client_create(struct ast_tcptls_s
 	if (!tcptls_session->stream) {
 		goto error;
 	}
+
+	/* From here on out, the iostream owns the accept_fd and it will take
+	 * care of closing it when the iostream is closed */
 
 	tcptls_session->parent = desc;
 	tcptls_session->parent->worker_fn = NULL;

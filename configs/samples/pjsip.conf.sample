@@ -263,6 +263,7 @@
 ;endpoint=mytrunk
 ;match=198.51.100.1
 ;match=198.51.100.2
+;match=192.168.10.0:5061/24
 
 
 ;=============ENDPOINT CONFIGURED AS A TRUNK, INBOUND AUTH AND REGISTRATION===
@@ -344,6 +345,10 @@
 ;device_state_busy_at=1
 ;allow_subscribe=yes
 ;sub_min_expiry=30
+;
+; STIR/SHAKEN support.
+;
+;stir_shaken=no
 
 ;[6001]
 ;type=auth
@@ -732,6 +737,9 @@
                         ; (default: "0")
 ;t38_udptl_nat=no       ; Whether NAT support is enabled on UDPTL sessions
                         ; (default: "no")
+;t38_bind_rtp_to_media_address=     ; Bind the UDPTL session to the media_address.
+                                    ; This causes all UDPTL packets to be sent from
+                                    ; the specified address. (default: "no")
 ;tone_zone=     ; Set which country s indications to use for channels created
                 ; for this endpoint (default: "")
 ;language=      ; Set the default language to use for channels created for this
@@ -797,10 +805,51 @@
                    ; "0" or not enabled)
 ;contact_user= ; On outgoing requests, force the user portion of the Contact
                ; header to this value (default: "")
-;preferred_codec_only=yes       ; Respond to a SIP invite with the single most preferred codec
-                                ; rather than advertising all joint codec capabilities. This
-                                ; limits the other side's codec choice to exactly what we prefer.
-                                ; default is no.
+;incoming_call_offer_pref= ; Based on this setting, a joint list of
+                           ; preferred codecs between those received in an
+                           ; incoming SDP offer (remote), and those specified
+                           ; in the endpoint's "allow" parameter (local)
+                           ; is created and is passed to the Asterisk core.
+                           ;
+                           ; local - Include all codecs in the local list that
+                           ; are also in the remote list preserving the local
+                           ; order. (default).
+                           ; local_first - Include only the first codec in the
+                           ; local list that is also in the remote list.
+                           ; remote - Include all codecs in the remote list that
+                           ; are also in the local list preserving remote list
+                           ; order.
+                           ; remote_first - Include only the first codec in
+                           ; the remote list that is also in the local list.
+;outgoing_call_offer_pref= ; Based on this setting, a joint list of
+                           ; preferred codecs between those received from the
+                           ; Asterisk core (remote), and those specified in
+                           ; the endpoint's "allow" parameter (local) is
+                           ; created and is used to create the outgoing SDP
+                           ; offer.
+                           ;
+                           ; local - Include all codecs in the local list that
+                           ; are also in the remote list preserving the local
+                           ; order.
+                           ; local_merge - Include all codecs in the local list
+                           ; preserving the local order.
+                           ; local_first - Include only the first codec in the
+                           ; local list.
+                           ; remote - Include all codecs in the remote list that
+                           ; are also in the local list preserving remote list
+                           ; order.
+                           ; remote_merge - Include all codecs in the local list
+                           ; preserving the remote list order. (default)
+                           ; remote_first - Include only the first codec in the
+                           ; remote list that is also in the local list.
+;preferred_codec_only=no   ; Respond to a SIP invite with the single most
+                           ; preferred codec rather than advertising all joint
+                           ; codec capabilities. This limits the other side's
+                           ; codec choice to exactly what we prefer.
+                           ; default is no.
+                           ; NOTE: This option is deprecated in favor
+                           ; of incoming_call_offer_pref.  Setting both
+                           ; options is unsupported.
 ;asymmetric_rtp_codec= ; Allow the sending and receiving codec to differ and
                        ; not be automatically matched (default: "no")
 ;refer_blind_progress= ; Whether to notifies all the progress details on blind
@@ -867,6 +916,40 @@
                            ; chan_sip and prevents these 183 responses from
                            ; being forwarded.
                            ; (default: no)
+;stir_shaken =
+                           ; If this is enabled, STIR/SHAKEN operations will be
+                           ; performed on this endpoint. This includes inbound
+                           ; and outbound INVITEs. On an inbound INVITE, Asterisk
+                           ; will check for an Identity header and attempt to
+                           ; verify the call. On an outbound INVITE, Asterisk will
+                           ; add an Identity header that others can use to verify
+                           ; calls from this endpoint. Additional configuration is
+                           ; done in stir_shaken.conf.
+                           ; The STIR_SHAKEN dialplan function must be used to get
+                           ; the verification results on inbound INVITEs. Nothing
+                           ; happens to the call if verification fails; it's up to
+                           ; you to determine what to do with the results.
+                           ; (default: no)
+;allow_unauthenticated_options =
+                           ; By default, chan_pjsip will challenge an incoming
+                           ; OPTIONS request for authentication credentials just
+                           ; as it would an INVITE request. This is consistent
+                           ; with RFC 3261.
+                           ; There are many UAs that use an OPTIONS request as a
+                           ; "ping" and they expect a 200 response indicating that
+                           ; the remote party is up and running without a need to
+                           ; authenticate.
+                           ; Setting allow_unauthenticated_options to 'yes' will
+                           ; instruct chan_pjsip to skip the authentication step
+                           ; when it receives an OPTIONS request for this
+                           ; endpoint.
+                           ; There are security implications to enabling this
+                           ; setting as it can allow information disclosure to
+                           ; occur - specifically, if enabled, an external party
+                           ; could enumerate and find the endpoint name by
+                           ; sending OPTIONS requests and examining the
+                           ; responses.
+                           ; (default: no)
 
 ;==========================AUTH SECTION OPTIONS=========================
 ;[auth]
@@ -879,14 +962,51 @@
 ;  "config show help res_pjsip auth realm" or on the wiki for the
 ;  difference.
 ;
-;auth_type=userpass     ; Authentication type (default: "userpass")
-;nonce_lifetime=32      ; Lifetime of a nonce associated with this
-                        ; authentication config (default: "32")
-;md5_cred=      ; MD5 Hash used for authentication (default: "")
-;password=      ; PlainText password used for authentication (default: "")
-;realm= ; SIP realm for endpoint (default: "")
-;type=  ; Must be auth (default: "")
-;username=      ; Username to use for account (default: "")
+;auth_type=userpass  ; Authentication type.  May be
+                     ; "userpass" for plain text passwords or
+                     ; "md5" for pre-hashed credentials.
+                     ; (default: "userpass")
+;nonce_lifetime=32   ; Lifetime of a nonce associated with this
+                     ; authentication config (default: "32")
+;md5_cred=     ; As an alternative to specifying a plain text password,
+               ; you can hash the username, realm and password
+               ; together one time and place the hash value here.
+               ; The input to the hash function must be in the
+               ; following format:
+               ; <username>:<realm>:<password>
+               ; For incoming authentication (asterisk is the UAS),
+               ; the realm must match either the realm set in this object
+               ; or the default set in in the "global" object.
+               ;
+               ; For outgoing authentication (asterisk is the UAC),
+               ; the realm must match what the server will be sending
+               ; in their WWW-Authenticate header.  It can't be blank
+               ; unless you expect the server to be sending a blank
+               ; realm in the header.
+               ; You can generate the hash with the following shell
+               ; command:
+               ; $ echo -n "myname:myrealm:mypassword" | md5sum
+               ; Note the '-n'.  You don't want a newline to be part
+               ; of the hash.  (default: "")
+;password=     ; PlainText password used for authentication (default: "")
+;realm=        ; For incoming authentication (asterisk is the UAS),
+               ; this is the realm to be sent on WWW-Authenticate
+               ; headers.  If not specified, the global object's
+               ; "default_realm" will be used.
+               ;
+               ; For outgoing authentication (asterisk is the UAS), this
+               ; must either be the realm the server is expected to send,
+               ; or left blank or contain a single '*' to automatically
+               ; use the realm sent by the server. If you have multiple
+               ; auth object for an endpoint, the realm is also used to
+               ; match the auth object to the realm the server sent.
+               ; Using the same auth section for inbound and outbound
+               ; authentication is not recommended.  There is a difference in
+               ; meaning for an empty realm setting between inbound and outbound
+               ; authentication uses.
+               ; (default: "")
+;type=         ; Must be auth (default: "")
+;username=     ; Username to use for account (default: "")
 
 
 ;==========================DOMAIN_ALIAS SECTION OPTIONS=========================
@@ -992,8 +1112,19 @@
                         ; contact created by rewrite_contact that the device is
                         ; refreshing.
                         ; (default: "no")
+;remove_unavailable=no  ; If remove_existing is disabled, will allow a registration
+                        ; to succeed by removing only unavailable contacts when
+                        ; max_contacts is exceeded. This will reject a registration
+                        ; that exceeds max_contacts if no unavailable contacts are
+                        ; present to remove. If remove_existing is enabled, will
+                        ; prioritize removal of unavailable contacts before removing
+                        ; expiring soonest.  This tames the behavior of remove_existing
+                        ; to only remove an available contact if an unavailable one is
+                        ; not present.
+                        ; (default: "no")
 ;type=  ; Must be of type aor (default: "")
-;qualify_frequency=0    ; Interval at which to qualify an AoR (default: "0")
+;qualify_frequency=0    ; Interval at which to qualify an AoR via OPTIONS requests.
+                        ; (default: "0")
 ;qualify_timeout=3.0      ; Qualify timeout in fractional seconds (default: "3.0")
 ;authenticate_qualify=no        ; Authenticates a qualify request if needed
                                 ; (default: "no")
@@ -1043,6 +1174,7 @@
                            ; This option must also be enabled on endpoints that
                            ; require this functionality.
                            ; (default: no)
+;disable_rport=no ; Disable the use of "rport" in outgoing requests.
 ;type=  ; Must be of type system (default: "")
 
 ;==========================GLOBAL SECTION OPTIONS=========================
@@ -1064,9 +1196,10 @@
                                                         ; int")
 ;debug=no ; Enable/Disable SIP debug logging.  Valid options include yes|no
           ; or a host address (default: "no")
-;keep_alive_interval=20 ; The interval (in seconds) at which to send keepalive
-                        ; messages on all active connection-oriented transports
-                        ; (default: "0")
+;keep_alive_interval=90 ; The interval (in seconds) at which to send (double CRLF)
+                        ; keep-alives on all active connection-oriented transports;
+                        ; for connection-less like UDP see qualify_frequency.
+                        ; (default: "90")
 ;contact_expiration_check_interval=30
                         ; The interval (in seconds) to check for expired contacts.
 ;disable_multi_domain=no

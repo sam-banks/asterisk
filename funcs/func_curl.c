@@ -31,6 +31,7 @@
  */
 
 /*** MODULEINFO
+	<depend>res_curl</depend>
 	<depend>curl</depend>
 	<support_level>core</support_level>
  ***/
@@ -110,6 +111,9 @@
 					<enum name="dnstimeout">
 						<para>Number of seconds to wait for DNS to be resolved</para>
 					</enum>
+					<enum name="followlocation">
+						<para>Whether or not to follow HTTP 3xx redirects (boolean)</para>
+					</enum>
 					<enum name="ftptext">
 						<para>For FTP URIs, force a text transfer (boolean)</para>
 					</enum>
@@ -121,12 +125,19 @@
 						<para>Include header information in the result
 						(boolean)</para>
 					</enum>
+					<enum name="httpheader">
+						<para>Add HTTP header. Multiple calls add multiple headers.
+						Setting of any header will remove the default
+						"Content-Type application/x-www-form-urlencoded"</para>
+					</enum>
 					<enum name="httptimeout">
 						<para>For HTTP(S) URIs, number of seconds to wait for a
 						server response</para>
 					</enum>
 					<enum name="maxredirs">
-						<para>Maximum number of redirects to follow</para>
+						<para>Maximum number of redirects to follow. The default is -1,
+						which allows for unlimited redirects. This only makes sense when
+						followlocation is also set.</para>
 					</enum>
 					<enum name="proxy">
 						<para>Hostname or IP address to use as a proxy server</para>
@@ -176,12 +187,15 @@
 							</enum>
 						</enumlist>
 					</enum>
+					<enum name="failurecodes">
+						<para>A comma separated list of HTTP response codes to be treated as errors</para>
+					</enum>
 				</enumlist>
 			</parameter>
 		</syntax>
 		<description>
 			<para>Options may be set globally or per channel.  Per-channel
-			settings will override global settings.</para>
+			settings will override global settings. Only HTTP headers are added instead of overriding</para>
 		</description>
 		<see-also>
 			<ref type="function">CURL</ref>
@@ -194,6 +208,8 @@
 	((LIBCURL_VERSION_MAJOR > (a)) || ((LIBCURL_VERSION_MAJOR == (a)) && (LIBCURL_VERSION_MINOR > (b))) || ((LIBCURL_VERSION_MAJOR == (a)) && (LIBCURL_VERSION_MINOR == (b)) && (LIBCURL_VERSION_PATCH >= (c))))
 
 #define CURLOPT_SPECIAL_HASHCOMPAT ((CURLoption) -500)
+
+#define CURLOPT_SPECIAL_FAILURE_CODE 999
 
 static void curlds_free(void *data);
 
@@ -243,6 +259,9 @@ static int parse_curlopt_key(const char *name, CURLoption *key, enum optiontype 
 	if (!strcasecmp(name, "header")) {
 		*key = CURLOPT_HEADER;
 		*ot = OT_BOOLEAN;
+	} else if (!strcasecmp(name, "httpheader")) {
+		*key = CURLOPT_HTTPHEADER;
+		*ot = OT_STRING;
 	} else if (!strcasecmp(name, "proxy")) {
 		*key = CURLOPT_PROXY;
 		*ot = OT_STRING;
@@ -261,6 +280,9 @@ static int parse_curlopt_key(const char *name, CURLoption *key, enum optiontype 
 	} else if (!strcasecmp(name, "proxyuserpwd")) {
 		*key = CURLOPT_PROXYUSERPWD;
 		*ot = OT_STRING;
+	} else if (!strcasecmp(name, "followlocation")) {
+		*key = CURLOPT_FOLLOWLOCATION;
+		*ot = OT_BOOLEAN;
 	} else if (!strcasecmp(name, "maxredirs")) {
 		*key = CURLOPT_MAXREDIRS;
 		*ot = OT_INTEGER;
@@ -301,6 +323,9 @@ static int parse_curlopt_key(const char *name, CURLoption *key, enum optiontype 
 	} else if (!strcasecmp(name, "hashcompat")) {
 		*key = CURLOPT_SPECIAL_HASHCOMPAT;
 		*ot = OT_ENUM;
+	} else if (!strcasecmp(name, "failurecodes")) {
+		*key = CURLOPT_SPECIAL_FAILURE_CODE;
+		*ot = OT_STRING;
 	} else {
 		return -1;
 	}
@@ -412,16 +437,18 @@ yuck:
 		return -1;
 	}
 
-	/* Remove any existing entry */
+	/* Remove any existing entry, only http headers are left */
 	AST_LIST_LOCK(list);
-	AST_LIST_TRAVERSE_SAFE_BEGIN(list, cur, list) {
-		if (cur->key == new->key) {
-			AST_LIST_REMOVE_CURRENT(list);
-			ast_free(cur);
-			break;
+	if (new->key != CURLOPT_HTTPHEADER) {
+		AST_LIST_TRAVERSE_SAFE_BEGIN(list, cur, list) {
+			if (cur->key == new->key) {
+				AST_LIST_REMOVE_CURRENT(list);
+				ast_free(cur);
+				break;
+			}
 		}
+		AST_LIST_TRAVERSE_SAFE_END
 	}
-	AST_LIST_TRAVERSE_SAFE_END
 
 	/* Insert new entry */
 	ast_debug(1, "Inserting entry %p with key %d and value %p\n", new, new->key, new->value);
@@ -636,9 +663,14 @@ struct curl_args {
 static int acf_curl_helper(struct ast_channel *chan, struct curl_args *args)
 {
 	struct ast_str *escapebuf = ast_str_thread_get(&thread_escapebuf, 16);
-	int ret = -1;
+	int ret = 0;
+	long http_code = 0; /* read curl response */
+	size_t i;
+	struct ast_vector_int hasfailurecode = { NULL };
+	char *failurecodestrings,*found;
 	CURL **curl;
 	struct curl_settings *cur;
+	struct curl_slist *headers = NULL;
 	struct ast_datastore *store = NULL;
 	int hashcompat = 0;
 	AST_LIST_HEAD(global_curl_info, curl_settings) *list = NULL;
@@ -662,10 +694,18 @@ static int acf_curl_helper(struct ast_channel *chan, struct curl_args *args)
 		ast_autoservice_start(chan);
 	}
 
+	AST_VECTOR_INIT(&hasfailurecode, 0); /*Initialize vector*/
 	AST_LIST_LOCK(&global_curl_info);
 	AST_LIST_TRAVERSE(&global_curl_info, cur, list) {
 		if (cur->key == CURLOPT_SPECIAL_HASHCOMPAT) {
 			hashcompat = (long) cur->value;
+		} else if (cur->key == CURLOPT_HTTPHEADER) {
+			headers = curl_slist_append(headers, (char*) cur->value);
+		} else if (cur->key == CURLOPT_SPECIAL_FAILURE_CODE) {
+			failurecodestrings = (char*) cur->value;
+			while( (found = strsep(&failurecodestrings, ",")) != NULL) {
+				AST_VECTOR_APPEND(&hasfailurecode, atoi(found));
+			}
 		} else {
 			curl_easy_setopt(*curl, cur->key, cur->value);
 		}
@@ -682,6 +722,13 @@ static int acf_curl_helper(struct ast_channel *chan, struct curl_args *args)
 			AST_LIST_TRAVERSE(list, cur, list) {
 				if (cur->key == CURLOPT_SPECIAL_HASHCOMPAT) {
 					hashcompat = (long) cur->value;
+				} else if (cur->key == CURLOPT_HTTPHEADER) {
+					headers = curl_slist_append(headers, (char*) cur->value);
+				} else if (cur->key == CURLOPT_SPECIAL_FAILURE_CODE) {
+					failurecodestrings = (char*) cur->value;
+					while( (found = strsep(&failurecodestrings, ",")) != NULL) {
+						AST_VECTOR_APPEND(&hasfailurecode, atoi(found));
+					}
 				} else {
 					curl_easy_setopt(*curl, cur->key, cur->value);
 				}
@@ -697,6 +744,11 @@ static int acf_curl_helper(struct ast_channel *chan, struct curl_args *args)
 		curl_easy_setopt(*curl, CURLOPT_POSTFIELDS, args->postdata);
 	}
 
+	/* Always assign the headers - even when NULL - in case we had
+	 * custom headers the last time we used this shared cURL
+	 * instance */
+	curl_easy_setopt(*curl, CURLOPT_HTTPHEADER, headers);
+
 	/* Temporarily assign a buffer for curl to write errors to. */
 	curl_errbuf[0] = curl_errbuf[CURL_ERROR_SIZE] = '\0';
 	curl_easy_setopt(*curl, CURLOPT_ERRORBUFFER, curl_errbuf);
@@ -710,10 +762,25 @@ static int acf_curl_helper(struct ast_channel *chan, struct curl_args *args)
 	 * here, but the source allows it. See: "typecheck: allow NULL to unset
 	 * CURLOPT_ERRORBUFFER" (62bcf005f4678a93158358265ba905bace33b834). */
 	curl_easy_setopt(*curl, CURLOPT_ERRORBUFFER, (char*)NULL);
+	curl_easy_getinfo (*curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+	for (i = 0; i < AST_VECTOR_SIZE(&hasfailurecode); ++i) {
+		if (http_code == AST_VECTOR_GET(&hasfailurecode,i)){
+			ast_log(LOG_NOTICE, "%s%sCURL '%s' returned response code (%ld).\n",
+				chan ? ast_channel_name(chan) : "",
+				chan ? ast_channel_name(chan) : ": ",
+				args->url,
+				http_code);
+			ret=-1;
+			break;
+		}
+	}
+	AST_VECTOR_FREE(&hasfailurecode); /* Release the vector*/
 
 	if (store) {
 		AST_LIST_UNLOCK(list);
 	}
+	curl_slist_free_all(headers);
 
 	if (args->postdata) {
 		curl_easy_setopt(*curl, CURLOPT_POST, 0);
@@ -745,7 +812,6 @@ static int acf_curl_helper(struct ast_channel *chan, struct curl_args *args)
 			ast_free(fields);
 			ast_free(values);
 		}
-		ret = 0;
 	}
 
 	if (chan) {
@@ -838,9 +904,11 @@ static struct ast_custom_function acf_curlopt = {
 "  cookie         - Send cookie with request [none]\n"
 "  conntimeout    - Number of seconds to wait for connection\n"
 "  dnstimeout     - Number of seconds to wait for DNS response\n"
+"  followlocation - Follow HTTP 3xx redirects (boolean)\n"
 "  ftptext        - For FTP, force a text transfer (boolean)\n"
 "  ftptimeout     - For FTP, the server response timeout\n"
 "  header         - Retrieve header information (boolean)\n"
+"  httpheader     - Add new custom http header (string)\n"
 "  httptimeout    - Number of seconds to wait for HTTP response\n"
 "  maxredirs      - Maximum number of redirects to follow\n"
 "  proxy          - Hostname or IP to use as a proxy\n"
@@ -853,6 +921,7 @@ static struct ast_custom_function acf_curlopt = {
 "  ssl_verifypeer - Whether to verify the peer certificate (boolean)\n"
 "  hashcompat     - Result data will be compatible for use with HASH()\n"
 "                 - if value is \"legacy\", will translate '+' to ' '\n"
+"  failurecodes   - A comma separated list of HTTP response codes to be treated as errors\n"
 "",
 	.read = acf_curlopt_read,
 	.read2 = acf_curlopt_read2,

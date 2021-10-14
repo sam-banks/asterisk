@@ -141,6 +141,8 @@ enum ast_bridge_video_sfu_remb_behavior {
 	AST_BRIDGE_VIDEO_SFU_REMB_LOWEST_ALL,
 	/*! The highest reported bitrate from all channels in the bridge is forwarded to each sender */
 	AST_BRIDGE_VIDEO_SFU_REMB_HIGHEST_ALL,
+	/*! Force the REMB estimated bitrate to a specified value */
+	AST_BRIDGE_VIDEO_SFU_REMB_FORCE,
 };
 
 /*! \brief This is used for selective forwarding unit configuration */
@@ -149,6 +151,8 @@ struct ast_bridge_video_sfu_data {
 	unsigned int remb_send_interval;
 	/*! How the combined REMB report is generated */
 	enum ast_bridge_video_sfu_remb_behavior remb_behavior;
+	/*! The estimated bitrate when behavior is "force" */
+	float estimated_bitrate;
 };
 
 /*! \brief Data structure that defines a video source mode */
@@ -302,6 +306,12 @@ struct ast_bridge_softmix {
 	 * the channel uniqueid.  Used for participant info correlation.
 	 */
 	unsigned int send_sdp_label;
+	/*!
+	 * \brief The maximum sample rate softmix uses to mix channels.
+	 *
+	 * \note If this value is 0, there is no maximum sample rate.
+	 */
+	unsigned int maximum_sample_rate;
 };
 
 AST_LIST_HEAD_NOLOCK(ast_bridge_channels_list, ast_bridge_channel);
@@ -957,6 +967,21 @@ int ast_bridge_queue_everyone_else(struct ast_bridge *bridge, struct ast_bridge_
 void ast_bridge_set_internal_sample_rate(struct ast_bridge *bridge, unsigned int sample_rate);
 
 /*!
+ * \brief Adjust the maximum mixing sample rate of a bridge
+ * used during multimix mode.
+ * \since 13.31.0
+ * \since 16.8.0
+ * \since 17.2.0
+ *
+ * \param bridge Channel to change the sample rate on.
+ * \param sample_rate the maximum sample rate to use. If a
+ *        value of 0 is passed here, the bridge will be free to pick
+ *        what ever sample rate it chooses.
+ *
+ */
+void ast_bridge_set_maximum_sample_rate(struct ast_bridge *bridge, unsigned int sample_rate);
+
+/*!
  * \brief Adjust the internal mixing interval of a bridge used
  * during multimix mode.
  *
@@ -1017,6 +1042,16 @@ void ast_bridge_set_remb_send_interval(struct ast_bridge *bridge, unsigned int r
  * \note This can only be called when the bridge has been set to the SFU video mode.
  */
 void ast_brige_set_remb_behavior(struct ast_bridge *bridge, enum ast_bridge_video_sfu_remb_behavior behavior);
+
+/*!
+ * \brief Force the REMB report estimated bitrate to a specific max value
+ *
+ * \param bridge Bridge to set the REMB behavior on
+ * \param estimated_bitrate The estimated bitrate in bits per second
+ *
+ * \note This can only be called when the bridge has been set to the SFU video mode.
+ */
+void ast_bridge_set_remb_estimated_bitrate(struct ast_bridge *bridge, float estimated_bitrate);
 
 /*!
  * \brief Update information about talker energy for talker src video mode.

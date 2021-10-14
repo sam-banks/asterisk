@@ -31,7 +31,10 @@
 /*** MODULEINFO
 	<depend>osptk</depend>
 	<depend>openssl</depend>
-	<support_level>extended</support_level>
+	<defaultenabled>no</defaultenabled>
+	<support_level>deprecated</support_level>
+	<deprecated_in>19</deprecated_in>
+	<removed_in>21</removed_in>
  ***/
 
 #include "asterisk.h"
@@ -449,6 +452,7 @@
 #define OSP_SIZE_UUID		((unsigned int)16)			/* UUID size */
 #define OSP_SIZE_UUIDSTR	((unsigned int)36)			/* UUID string size */
 #define OSP_SIZE_QOSSTR		((unsigned int)1024)		/* QoS string buffer size */
+#define OSP_SIZE_OUTSTR		((unsigned int)288)		/* OSP out size for osp_convert_inout */
 
 /* Call ID Type*/
 #define OSP_CALLID_UNDEF	((unsigned int)0)			/* Undefined */
@@ -1089,8 +1093,8 @@ static int osp_validate_token(
 	int res;
 	int tokenlen;
 	unsigned char tokenstr[OSP_SIZE_TOKSTR];
-	char src[OSP_SIZE_NORSTR];
-	char dest[OSP_SIZE_NORSTR];
+	char src[OSP_SIZE_OUTSTR];
+	char dest[OSP_SIZE_OUTSTR];
 	unsigned int authorised;
 	unsigned int dummy = 0;
 	int error;
@@ -1518,14 +1522,14 @@ static int osp_lookup(
 	char* tmp;
 	unsigned int tokenlen;
 	char token[OSP_SIZE_TOKSTR];
-	char src[OSP_SIZE_NORSTR];
-	char dev[OSP_SIZE_NORSTR];
-	char host[OSP_SIZE_NORSTR];
+	char src[OSP_SIZE_OUTSTR];
+	char dev[OSP_SIZE_OUTSTR];
+	char host[OSP_SIZE_OUTSTR];
 	unsigned int i, type;
 	struct osp_callid callid;
 	unsigned int callidnum;
 	OSPT_CALL_ID* callids[OSP_CALLID_MAXNUM];
-	char dest[OSP_SIZE_NORSTR];
+	char dest[OSP_SIZE_OUTSTR];
 	const char* preferred[2] = { NULL };
 	unsigned int dummy = 0;
 	OSPEFAILREASON reason;
@@ -3162,7 +3166,7 @@ static int reload(void)
 }
 
 AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_DEFAULT, "Open Settlement Protocol Applications",
-	.support_level = AST_MODULE_SUPPORT_EXTENDED,
+	.support_level = AST_MODULE_SUPPORT_DEPRECATED,
 	.load = load_module,
 	.unload = unload_module,
 	.reload = reload,

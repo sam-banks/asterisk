@@ -269,7 +269,7 @@ AST_TEST_DEFINE(lost_packet_stats_nominal)
 	RAII_VAR(struct ast_rtp_instance *, instance2, NULL, ast_rtp_instance_destroy);
 	RAII_VAR(struct ast_sched_context *, test_sched, NULL, ast_sched_context_destroy_wrapper);
 	struct ast_rtp_instance_stats stats = { 0, };
-	enum ast_rtp_instance_stat stat = AST_RTP_INSTANCE_STAT_RXPLOSS;
+	enum ast_rtp_instance_stat stat = AST_RTP_INSTANCE_STAT_ALL;
 
 	switch (cmd) {
 	case TEST_INIT:
@@ -303,8 +303,42 @@ AST_TEST_DEFINE(lost_packet_stats_nominal)
 
 	/* Check RTCP stats to see if we got the expected packet loss count */
 	ast_rtp_instance_get_stats(instance2, &stats, stat);
-	ast_test_validate(test, stats.rxploss == 5,
-		"Condition of 5 lost packets was not met");
+	ast_test_validate(test, stats.rxploss == 5 && stats.local_minrxploss == 5 &&
+		stats.local_maxrxploss == 5, "Condition of 5 lost packets was not met");
+
+	/* Drop 3 before writing 5 more */
+	test_write_and_read_frames(instance1, instance2, 1023, 5);
+
+	ast_rtp_instance_queue_report(instance1);
+	test_write_frames(instance2, 1001, 1);
+	ast_rtp_instance_get_stats(instance2, &stats, stat);
+
+	/* Should now be missing 8 total packets with a change in min */
+	ast_test_validate(test, stats.rxploss == 8 && stats.local_minrxploss == 3 &&
+		stats.local_maxrxploss == 5);
+
+	/* Write 5 more with no gaps */
+	test_write_and_read_frames(instance1, instance2, 1028, 5);
+
+	ast_rtp_instance_queue_report(instance1);
+	test_write_frames(instance2, 1002, 1);
+	ast_rtp_instance_get_stats(instance2, &stats, stat);
+
+	/* Should still only be missing 8 total packets */
+	ast_test_validate(test, stats.rxploss == 8 && stats.local_minrxploss == 3 &&
+		stats.local_maxrxploss == 5);
+
+	/* Now drop 1, write another 5, drop 8, and then write 5 */
+	test_write_and_read_frames(instance1, instance2, 1034, 5);
+	test_write_and_read_frames(instance1, instance2, 1047, 5);
+
+	ast_rtp_instance_queue_report(instance1);
+	test_write_frames(instance2, 1003, 1);
+	ast_rtp_instance_get_stats(instance2, &stats, stat);
+
+	/* Now it should be missing 17 total packets, with a change in max */
+	ast_test_validate(test, stats.rxploss == 17 && stats.local_minrxploss == 3 &&
+		stats.local_maxrxploss == 9);
 
 	return AST_TEST_PASS;
 }
@@ -327,6 +361,7 @@ AST_TEST_DEFINE(remb_nominal)
 		.data.ptr = &feedback,
 		.datalen = sizeof(feedback),
 	};
+	struct ast_rtp_rtcp_feedback *received_feedback;
 
 	switch (cmd) {
 	case TEST_INIT:
@@ -337,8 +372,7 @@ AST_TEST_DEFINE(remb_nominal)
 			"Tests sending and receiving a REMB packet";
 		return AST_TEST_NOT_RUN;
 	case TEST_EXECUTE:
-		/* Disable for now - there's a bug! */
-		return AST_TEST_NOT_RUN;
+		break;
 	}
 
 	test_sched = ast_sched_context_create();
@@ -353,18 +387,22 @@ AST_TEST_DEFINE(remb_nominal)
 
 	ast_rtp_instance_write(instance1, &frame_out);
 
-	/*
-	 * There may be some additional work that needs to be done here, depending on how
-	 * Asterisk handles the reading in of compound packets. We might get an ast_null_frame
-	 * here instead of the REMB frame. We'll need to check the frametype to distinguish
-	 * between them (AST_FRAME_NULL for ast_null_frame, AST_FRAME_RTCP for REMB).
-	 */
+	/* Verify the high level aspects of the frame */
 	frame_in = ast_rtp_instance_read(instance2, 0);
 	ast_test_validate(test, frame_in != NULL, "Did not receive a REMB frame");
 	ast_test_validate(test, frame_in->frametype == AST_FRAME_RTCP,
 		"REMB frame did not have the expected frametype");
 	ast_test_validate(test, frame_in->subclass.integer == AST_RTP_RTCP_PSFB,
 		"REMB frame did not have the expected subclass integer");
+
+	/* Verify the actual REMB information itself */
+	received_feedback = frame_in->data.ptr;
+	ast_test_validate(test, received_feedback->fmt == AST_RTP_RTCP_FMT_REMB,
+		"REMB frame did not have the expected feedback format");
+	ast_test_validate(test, received_feedback->remb.br_exp == feedback.remb.br_exp,
+		"REMB received exponent did not match sent exponent");
+	ast_test_validate(test, received_feedback->remb.br_mantissa == feedback.remb.br_mantissa,
+		"REMB received mantissa did not match sent mantissa");
 
 	return AST_TEST_PASS;
 }
@@ -447,8 +485,7 @@ AST_TEST_DEFINE(fir_nominal)
 			"Tests sending and receiving a FIR packet";
 		return AST_TEST_NOT_RUN;
 	case TEST_EXECUTE:
-		/* Disable for now - there's a bug! */
-		return AST_TEST_NOT_RUN;
+		break;
 	}
 
 	test_sched = ast_sched_context_create();
@@ -475,9 +512,6 @@ AST_TEST_DEFINE(fir_nominal)
 	 * We only receive one frame, the FIR request. It won't have a subclass integer of
 	 * 206 (PSFB) because ast_rtcp_interpret sets it to 18 (AST_CONTROL_VIDUPDATE), so
 	 * check for that.
-	 *
-	 * NOTE - similar to REMB, there may be more that needs to be done here when the
-	 * packet is sent as a compound packet!
 	 */
 	frame_in = ast_rtp_instance_read(instance2, 0);
 	ast_test_validate(test, frame_in != NULL, "Did not receive a FIR frame");

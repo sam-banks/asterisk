@@ -49,6 +49,7 @@ DESTDIR?=$(INSTALL_PATH)
 export DESTDIR
 
 export INSTALL_PATH       # Additional prefix for the following paths
+export ASTCACHEDIR
 export ASTETCDIR          # Path for config files
 export ASTVARRUNDIR
 export ASTSPOOLDIR
@@ -234,6 +235,10 @@ ifeq ($(OSARCH),OpenBSD)
   _ASTCFLAGS+=-pthread -ftrampolines
 endif
 
+ifeq ($(OSARCH),linux-uclibc)
+  AST_LIBS+=-lpthread -ldl
+endif
+
 ifeq ($(OSARCH),SunOS)
   _ASTCFLAGS+=-Wcast-align -DSOLARIS -I../include/solaris-compat -I/opt/ssl/include -I/usr/local/ssl/include -D_XPG4_2 -D__EXTENSIONS__
 endif
@@ -245,7 +250,7 @@ else
 endif
 ifneq ($(AWK),)
   ifneq ($(wildcard .version),)
-    ASTERISKVERSIONNUM:=$(shell $(AWK) -F. '{printf "%01d%02d%02d", $$1, $$2, $$3}' .version)
+    ASTERISKVERSIONNUM:=$(shell $(SED) -e 's/^certified\///' -e 's/-cert/./' .version | $(AWK) -F. '{printf "%01d%02d%02d", $$1, $$2, $$3}')
   endif
 endif
 
@@ -485,6 +490,13 @@ doc/core-en_US.xml: makeopts .lastclean $(XML_core_en_US)
 	@for x in $(MOD_SUBDIRS); do \
 		printf "$$x " ; \
 		for i in `find $$x -name '*.c'`; do \
+			MODULEINFO=$$($(AWK) -f build_tools/get_moduleinfo $$i) ; \
+			if [ -n "$$MODULEINFO" ] ; \
+			then \
+				echo "<module language=\"en_US\" name=\"`$(BASENAME) $$i .c`\">" >> $@ ; \
+				echo "$$MODULEINFO" >> $@ ; \
+				echo "</module>" >> $@ ; \
+			fi ; \
 			$(AWK) -f build_tools/get_documentation $$i >> $@ ; \
 		done ; \
 	done
@@ -551,7 +563,7 @@ update:
 
 NEWHEADERS=$(notdir $(wildcard include/asterisk/*.h))
 OLDHEADERS=$(filter-out $(NEWHEADERS) $(notdir $(DESTDIR)$(ASTHEADERDIR)),$(notdir $(wildcard $(DESTDIR)$(ASTHEADERDIR)/*.h)))
-INSTALLDIRS="$(ASTLIBDIR)" "$(ASTMODDIR)" "$(ASTSBINDIR)" "$(ASTETCDIR)" "$(ASTVARRUNDIR)" \
+INSTALLDIRS="$(ASTLIBDIR)" "$(ASTMODDIR)" "$(ASTSBINDIR)" "$(ASTCACHEDIR)" "$(ASTETCDIR)" "$(ASTVARRUNDIR)" \
 	"$(ASTSPOOLDIR)" "$(ASTSPOOLDIR)/dictate" "$(ASTSPOOLDIR)/meetme" \
 	"$(ASTSPOOLDIR)/monitor" "$(ASTSPOOLDIR)/system" "$(ASTSPOOLDIR)/tmp" \
 	"$(ASTSPOOLDIR)/voicemail" "$(ASTSPOOLDIR)/recording" \
@@ -561,7 +573,7 @@ INSTALLDIRS="$(ASTLIBDIR)" "$(ASTMODDIR)" "$(ASTSBINDIR)" "$(ASTETCDIR)" "$(ASTV
 	"$(ASTDATADIR)/firmware/iax" "$(ASTDATADIR)/images" "$(ASTDATADIR)/keys" \
 	"$(ASTDATADIR)/phoneprov" "$(ASTDATADIR)/rest-api" "$(ASTDATADIR)/static-http" \
 	"$(ASTDATADIR)/sounds" "$(ASTDATADIR)/moh" "$(ASTMANDIR)/man8" "$(AGI_DIR)" "$(ASTDBDIR)" \
-	"$(ASTDATADIR)/third-party"
+	"$(ASTDATADIR)/third-party" "${ASTDATADIR}/keys/stir_shaken"
 
 installdirs:
 	@for i in $(INSTALLDIRS); do \
@@ -775,7 +787,8 @@ define INSTALL_CONFIGS
 	done ; \
 	if [ "$(OVERWRITE)" = "y" ]; then \
 		echo "Updating asterisk.conf" ; \
-		sed -e 's|^astetcdir.*$$|astetcdir => $(ASTETCDIR)|' \
+		sed -e 's|^astcachedir.*$$|astcachedir => $(ASTCACHEDIR)|' \
+			-e 's|^astetcdir.*$$|astetcdir => $(ASTETCDIR)|' \
 			-e 's|^astmoddir.*$$|astmoddir => $(ASTMODDIR)|' \
 			-e 's|^astvarlibdir.*$$|astvarlibdir => $(ASTVARLIBDIR)|' \
 			-e 's|^astdbdir.*$$|astdbdir => $(ASTDBDIR)|' \
@@ -1037,6 +1050,7 @@ uninstall-all: _uninstall uninstall-headers
 	rm -rf "$(DESTDIR)$(ASTSPOOLDIR)"
 	rm -rf "$(DESTDIR)$(ASTETCDIR)"
 	rm -rf "$(DESTDIR)$(ASTLOGDIR)"
+	rm -rf "$(DESTDIR)$(ASTCACHEDIR)"
 
 menuconfig: menuselect
 

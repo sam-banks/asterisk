@@ -51,6 +51,8 @@
 #include "asterisk/channel.h"
 #include "asterisk/autochan.h"
 #include "asterisk/manager.h"
+#include "asterisk/stasis.h"
+#include "asterisk/stasis_channels.h"
 #include "asterisk/callerid.h"
 #include "asterisk/mod_format.h"
 #include "asterisk/linkedlists.h"
@@ -115,10 +117,10 @@
 						Like with the basic filename argument, if an absolute path isn't given, it will create
 						the file in the configured monitoring directory.</para>
 					</option>
-					<option name="S">
-						<para>When combined with the <replaceable>r</replaceable> or <replaceable>t</replaceable>
-						option, inserts silence when necessary to maintain synchronization between the receive
-						and transmit audio streams.</para>
+					<option name="n">
+						<para>When the <replaceable>r</replaceable> or <replaceable>t</replaceable> option is
+						used, MixMonitor will insert silence into the specified files to maintain
+						synchronization between them. Use this option to disable that behavior.</para>
 					</option>
 					<option name="i">
 						<argument name="chanvar" required="true" />
@@ -154,6 +156,11 @@
 			<para>This application does not automatically answer and should be preceeded by
 			an application such as Answer or Progress().</para>
 			<note><para>MixMonitor runs as an audiohook.</para></note>
+			<note><para>If a filename passed to MixMonitor ends with
+			<literal>.wav49</literal>, Asterisk will silently convert the extension to
+			<literal>.WAV</literal> for legacy reasons. <variable>MIXMONITOR_FILENAME</variable>
+			will contain the actual filename that Asterisk is writing to, not necessarily the
+			value that was passed in.</para></note>
 			<variablelist>
 				<variable name="MIXMONITOR_FILENAME">
 					<para>Will contain the filename used to record.</para>
@@ -290,6 +297,51 @@
 			</parameter>
 		</syntax>
 	</function>
+	<managerEvent language="en_US" name="MixMonitorStart">
+		<managerEventInstance class="EVENT_FLAG_CALL">
+			<synopsis>Raised when monitoring has started on a channel.</synopsis>
+			<syntax>
+				<channel_snapshot/>
+			</syntax>
+			<see-also>
+				<ref type="managerEvent">MixMonitorStop</ref>
+				<ref type="application">MixMonitor</ref>
+				<ref type="manager">MixMonitor</ref>
+			</see-also>
+		</managerEventInstance>
+	</managerEvent>
+	<managerEvent language="en_US" name="MixMonitorStop">
+		<managerEventInstance class="EVENT_FLAG_CALL">
+		<synopsis>Raised when monitoring has stopped on a channel.</synopsis>
+		<syntax>
+			<channel_snapshot/>
+		</syntax>
+		<see-also>
+			<ref type="managerEvent">MixMonitorStart</ref>
+			<ref type="application">StopMixMonitor</ref>
+			<ref type="manager">StopMixMonitor</ref>
+		</see-also>
+		</managerEventInstance>
+	</managerEvent>
+	<managerEvent language="en_US" name="MixMonitorMute">
+		<managerEventInstance class="EVENT_FLAG_CALL">
+		<synopsis>Raised when monitoring is muted or unmuted on a channel.</synopsis>
+		<syntax>
+			<channel_snapshot/>
+			<parameter name="Direction">
+				<para>Which part of the recording was muted or unmuted: read, write or both
+				(from channel, to channel or both directions).</para>
+			</parameter>
+			<parameter name="State">
+				<para>If the monitoring was muted or unmuted: 1 when muted, 0 when unmuted.</para>
+			</parameter>
+		</syntax>
+		<see-also>
+			<ref type="manager">MixMonitorMute</ref>
+		</see-also>
+		</managerEventInstance>
+	</managerEvent>
+
 
  ***/
 
@@ -353,7 +405,8 @@ enum mixmonitor_flags {
 	MUXFLAG_BEEP = (1 << 11),
 	MUXFLAG_BEEP_START = (1 << 12),
 	MUXFLAG_BEEP_STOP = (1 << 13),
-	MUXFLAG_RWSYNC = (1 << 14),
+	MUXFLAG_DEPRECATED_RWSYNC = (1 << 14),
+	MUXFLAG_NO_RWSYNC = (1 << 15),
 };
 
 enum mixmonitor_args {
@@ -365,7 +418,8 @@ enum mixmonitor_args {
 	OPT_ARG_UID,
 	OPT_ARG_VMRECIPIENTS,
 	OPT_ARG_BEEP_INTERVAL,
-	OPT_ARG_RWSYNC,
+	OPT_ARG_DEPRECATED_RWSYNC,
+	OPT_ARG_NO_RWSYNC,
 	OPT_ARG_ARRAY_SIZE,	/* Always last element of the enum */
 };
 
@@ -382,7 +436,8 @@ AST_APP_OPTIONS(mixmonitor_opts, {
 	AST_APP_OPTION_ARG('t', MUXFLAG_WRITE, OPT_ARG_WRITENAME),
 	AST_APP_OPTION_ARG('i', MUXFLAG_UID, OPT_ARG_UID),
 	AST_APP_OPTION_ARG('m', MUXFLAG_VMRECIPIENTS, OPT_ARG_VMRECIPIENTS),
-	AST_APP_OPTION_ARG('S', MUXFLAG_RWSYNC, OPT_ARG_RWSYNC),
+	AST_APP_OPTION_ARG('S', MUXFLAG_DEPRECATED_RWSYNC, OPT_ARG_DEPRECATED_RWSYNC),
+	AST_APP_OPTION_ARG('n', MUXFLAG_NO_RWSYNC, OPT_ARG_NO_RWSYNC),
 });
 
 struct mixmonitor_ds {
@@ -857,6 +912,24 @@ static int setup_mixmonitor_ds(struct mixmonitor *mixmonitor, struct ast_channel
 	return 0;
 }
 
+static void mixmonitor_ds_remove_and_free(struct ast_channel *chan, const char *datastore_id)
+{
+	struct ast_datastore *datastore;
+
+	ast_channel_lock(chan);
+
+	datastore = ast_channel_datastore_find(chan, &mixmonitor_ds_info, datastore_id);
+
+	/*
+	 * Currently the one place this function is called from guarantees a
+	 * datastore is present, thus return checks can be avoided here.
+	 */
+	ast_channel_datastore_remove(chan, datastore);
+	ast_datastore_free(datastore);
+
+	ast_channel_unlock(chan);
+}
+
 static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 				  unsigned int flags, int readvol, int writevol,
 				  const char *post_process, const char *filename_write,
@@ -932,7 +1005,6 @@ static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 			pbx_builtin_setvar_helper(chan, uid_channel_var, datastore_id);
 		}
 	}
-	ast_free(datastore_id);
 
 	mixmonitor->name = ast_strdup(ast_channel_name(chan));
 
@@ -970,7 +1042,7 @@ static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 	}
 
 	ast_set_flag(&mixmonitor->audiohook, AST_AUDIOHOOK_TRIGGER_SYNC);
-	if ((ast_test_flag(mixmonitor, MUXFLAG_RWSYNC))) {
+	if (!ast_test_flag(mixmonitor, MUXFLAG_NO_RWSYNC)) {
 		ast_set_flag(&mixmonitor->audiohook, AST_AUDIOHOOK_SUBSTITUTE_SILENCE);
 	}
 
@@ -982,10 +1054,15 @@ static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 	if (startmon(chan, &mixmonitor->audiohook)) {
 		ast_log(LOG_WARNING, "Unable to add '%s' spy to channel '%s'\n",
 			mixmonitor_spy_type, ast_channel_name(chan));
+		mixmonitor_ds_remove_and_free(chan, datastore_id);
+		ast_free(datastore_id);
+		ast_autochan_destroy(mixmonitor->autochan);
 		ast_audiohook_destroy(&mixmonitor->audiohook);
 		mixmonitor_free(mixmonitor);
 		return -1;
 	}
+
+	ast_free(datastore_id);
 
 	/* reference be released at mixmonitor destruction */
 	mixmonitor->callid = ast_read_threadstorage_callid();
@@ -998,16 +1075,34 @@ static int launch_monitor_thread(struct ast_channel *chan, const char *filename,
 static char *filename_parse(char *filename, char *buffer, size_t len)
 {
 	char *slash;
+	char *ext;
+
+	ast_assert(len > 0);
+
 	if (ast_strlen_zero(filename)) {
 		ast_log(LOG_WARNING, "No file name was provided for a file save option.\n");
-	} else if (filename[0] != '/') {
-		char *build;
-		build = ast_alloca(strlen(ast_config_AST_MONITOR_DIR) + strlen(filename) + 3);
+		buffer[0] = 0;
+		return buffer;
+	}
+
+	/* If we don't have an absolute path, make one */
+	if (*filename != '/') {
+		char *build = ast_alloca(strlen(ast_config_AST_MONITOR_DIR) + strlen(filename) + 3);
 		sprintf(build, "%s/%s", ast_config_AST_MONITOR_DIR, filename);
 		filename = build;
 	}
 
 	ast_copy_string(buffer, filename, len);
+
+	/* If the provided filename has a .wav49 extension, we need to convert it to .WAV to
+	   match the behavior of build_filename in main/file.c. Otherwise MIXMONITOR_FILENAME
+	   ends up referring to a file that does not/will not exist */
+	ext = strrchr(buffer, '.');
+	if (ext && !strcmp(ext, ".wav49")) {
+		/* Change to WAV - we know we have at least 6 writeable bytes where 'ext' points,
+		 * so this is safe */
+		memcpy(ext, ".WAV", sizeof(".WAV"));
+	}
 
 	if ((slash = strrchr(filename, '/'))) {
 		*slash = '\0';
@@ -1029,6 +1124,7 @@ static int mixmonitor_exec(struct ast_channel *chan, const char *data)
 	struct ast_flags flags = { 0 };
 	char *recipients = NULL;
 	char *parse;
+	RAII_VAR(struct stasis_message *, message, NULL, ao2_cleanup);
 	AST_DECLARE_APP_ARGS(args,
 		AST_APP_ARG(filename);
 		AST_APP_ARG(options);
@@ -1048,6 +1144,11 @@ static int mixmonitor_exec(struct ast_channel *chan, const char *data)
 		char *opts[OPT_ARG_ARRAY_SIZE] = { NULL, };
 
 		ast_app_parse_options(mixmonitor_opts, &flags, opts, args.options);
+
+		if (ast_test_flag(&flags, MUXFLAG_DEPRECATED_RWSYNC)) {
+			ast_log(LOG_NOTICE, "The synchronization behavior enabled by the 'S' option is now the default"
+				" and does not need to be specified.\n");
+		}
 
 		if (ast_test_flag(&flags, MUXFLAG_READVOLUME)) {
 			if (ast_strlen_zero(opts[OPT_ARG_READVOLUME])) {
@@ -1144,6 +1245,12 @@ static int mixmonitor_exec(struct ast_channel *chan, const char *data)
 		ast_module_unref(ast_module_info->self);
 	}
 
+	message = ast_channel_blob_create_from_cache(ast_channel_uniqueid(chan),
+		ast_channel_mixmonitor_start_type(), NULL);
+	if (message) {
+		stasis_publish(ast_channel_topic(chan), message);
+	}
+
 	return 0;
 }
 
@@ -1153,6 +1260,7 @@ static int stop_mixmonitor_full(struct ast_channel *chan, const char *data)
 	char *parse = "";
 	struct mixmonitor_ds *mixmonitor_ds;
 	const char *beep_id = NULL;
+	RAII_VAR(struct stasis_message *, message, NULL, ao2_cleanup);
 
 	AST_DECLARE_APP_ARGS(args,
 		AST_APP_ARG(mixmonid);
@@ -1208,6 +1316,13 @@ static int stop_mixmonitor_full(struct ast_channel *chan, const char *data)
 
 	if (!ast_strlen_zero(beep_id)) {
 		ast_beep_stop(chan, beep_id);
+	}
+
+	message = ast_channel_blob_create_from_cache(ast_channel_uniqueid(chan),
+	                                             ast_channel_mixmonitor_stop_type(),
+	                                             NULL);
+	if (message) {
+		stasis_publish(ast_channel_topic(chan), message);
 	}
 
 	return 0;
@@ -1297,6 +1412,8 @@ static int manager_mute_mixmonitor(struct mansession *s, const struct message *m
 	const char *direction = astman_get_header(m,"Direction");
 	int clearmute = 1;
 	enum ast_audiohook_flags flag;
+	RAII_VAR(struct stasis_message *, stasis_message, NULL, ao2_cleanup);
+	RAII_VAR(struct ast_json *, stasis_message_blob, NULL, ast_json_unref);
 
 	if (ast_strlen_zero(direction)) {
 		astman_send_error(s, m, "No direction specified. Must be read, write or both");
@@ -1336,6 +1453,17 @@ static int manager_mute_mixmonitor(struct mansession *s, const struct message *m
 		ast_channel_unref(c);
 		astman_send_error(s, m, "Cannot set mute flag");
 		return AMI_SUCCESS;
+	}
+
+	stasis_message_blob = ast_json_pack("{s: s, s: b}",
+		"direction", direction,
+		"state", ast_true(state));
+
+	stasis_message = ast_channel_blob_create_from_cache(ast_channel_uniqueid(c),
+		ast_channel_mixmonitor_mute_type(), stasis_message_blob);
+
+	if (stasis_message) {
+		stasis_publish(ast_channel_topic(c), stasis_message);
 	}
 
 	astman_append(s, "Response: Success\r\n");

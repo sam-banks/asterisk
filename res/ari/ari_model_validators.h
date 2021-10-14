@@ -388,24 +388,6 @@ int ast_ari_validate_text_message(struct ast_json *json);
 ari_validator ast_ari_validate_text_message_fn(void);
 
 /*!
- * \brief Validator for TextMessageVariable.
- *
- * A key/value pair variable in a text message.
- *
- * \param json JSON object to validate.
- * \returns True (non-zero) if valid.
- * \returns False (zero) if invalid.
- */
-int ast_ari_validate_text_message_variable(struct ast_json *json);
-
-/*!
- * \brief Function pointer to ast_ari_validate_text_message_variable().
- *
- * See \ref ast_ari_model_validators.h for more details.
- */
-ari_validator ast_ari_validate_text_message_variable_fn(void);
-
-/*!
  * \brief Validator for CallerID.
  *
  * Caller identification
@@ -476,24 +458,6 @@ int ast_ari_validate_dialplan_cep(struct ast_json *json);
  * See \ref ast_ari_model_validators.h for more details.
  */
 ari_validator ast_ari_validate_dialplan_cep_fn(void);
-
-/*!
- * \brief Validator for ExternalMedia.
- *
- * ExternalMedia session.
- *
- * \param json JSON object to validate.
- * \returns True (non-zero) if valid.
- * \returns False (zero) if invalid.
- */
-int ast_ari_validate_external_media(struct ast_json *json);
-
-/*!
- * \brief Function pointer to ast_ari_validate_external_media().
- *
- * See \ref ast_ari_model_validators.h for more details.
- */
-ari_validator ast_ari_validate_external_media_fn(void);
 
 /*!
  * \brief Validator for RTPstat.
@@ -1515,10 +1479,7 @@ ari_validator ast_ari_validate_application_fn(void);
  * - body: string (required)
  * - from: string (required)
  * - to: string (required)
- * - variables: List[TextMessageVariable]
- * TextMessageVariable
- * - key: string (required)
- * - value: string (required)
+ * - variables: object
  * CallerID
  * - name: string (required)
  * - number: string (required)
@@ -1540,10 +1501,6 @@ ari_validator ast_ari_validate_application_fn(void);
  * - context: string (required)
  * - exten: string (required)
  * - priority: long (required)
- * ExternalMedia
- * - channel: Channel (required)
- * - local_address: string
- * - local_port: int
  * RTPstat
  * - channel_uniqueid: string (required)
  * - local_maxjitter: double

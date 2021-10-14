@@ -1387,6 +1387,10 @@ static void pri_queue_control(struct sig_pri_span *pri, int chanpos, int subclas
  * \note Assumes the pri->lock is already obtained.
  * \note Assumes the sig_pri_lock_private(pri->pvts[chanpos]) is already obtained.
  *
+ * \note The unlocking/locking sequence now present has been stress tested
+ *       without deadlocks.  Please don't change it without consulting
+ *       core development team members.
+ *
  * \return Nothing
  */
 static void sig_pri_queue_hangup(struct sig_pri_span *pri, int chanpos)
@@ -1404,9 +1408,11 @@ static void sig_pri_queue_hangup(struct sig_pri_span *pri, int chanpos)
 		ast_queue_hangup(owner);
 		ast_channel_unlock(owner);
 
-		/* Tell the CDR this DAHDI channel hung up */
 		sig_pri_unlock_private(pri->pvts[chanpos]);
+		ast_mutex_unlock(&pri->lock);
+		/* Tell the CDR this DAHDI channel hung up */
 		ast_set_hangupsource(owner, ast_channel_name(owner), 0);
+		ast_mutex_lock(&pri->lock);
 		sig_pri_lock_private(pri->pvts[chanpos]);
 
 		ao2_ref(owner, -1);
@@ -2241,7 +2247,7 @@ static void *pri_ss_thread(void *data)
 
 void pri_event_alarm(struct sig_pri_span *pri, int index, int before_start_pri)
 {
-	pri->dchanavail[index] &= ~(DCHAN_NOTINALARM | DCHAN_UP);
+	pri->dchanavail[index] &= ~DCHAN_NOTINALARM;
 	if (!before_start_pri) {
 		pri_find_dchan(pri);
 	}

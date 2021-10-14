@@ -27,9 +27,9 @@
  */
 
 /*** MODULEINFO
-	<support_level>core</support_level>
 	<depend>pjproject</depend>
 	<depend>res_pjsip</depend>
+	<support_level>core</support_level>
  ***/
 
 #include "asterisk.h"
@@ -60,6 +60,12 @@
 					<configOptionToEnum>
 						<xi:include xpointer="xpointer(/docs/configInfo[@name='res_pjsip']/configFile[@name='pjsip.conf']/configObject[@name='contact']/configOption)"/>
 					</configOptionToEnum>
+					<enum name="rtt">
+						<para>The RTT of the last qualify</para>
+					</enum>
+					<enum name="status">
+						<para>Status of the contact</para>
+					</enum>
 				</enumlist>
 			</parameter>
 		</syntax>

@@ -53,9 +53,9 @@
  *
  * \section copyright Copyright and Author
  *
- * Copyright (C) 1999 - 2018, Digium, Inc.
- * Asterisk is a <a href="http://www.digium.com/en/company/view-policy.php?id=Trademark-Policy">registered trademark</a>
- * of <a rel="nofollow" href="http://www.digium.com">Digium, Inc</a>.
+ * Copyright (C) 1999 - 2021, Sangoma Technologies Corporation.
+ * Asterisk is a <a href="https://cdn.sangoma.com/wp-content/uploads/Sangoma-Trademark-Policy.pdf">registered trademark</a>
+ * of <a rel="nofollow" href="http://www.sangoma.com">Sangoma Technologies Corporation</a>.
  *
  * \author Mark Spencer <markster@digium.com>
  *
@@ -118,7 +118,7 @@
  *
  * \par IRC
  * \par
- * Use http://www.freenode.net IRC server to connect with Asterisk
+ * Use https://libera.chat IRC server to connect with Asterisk
  * developers and users in realtime.
  *
  * \li \verbatim #asterisk \endverbatim Asterisk Users Room
@@ -242,6 +242,7 @@ int daemon(int, int);  /* defined in libresolv of all places */
 #include "asterisk/media_cache.h"
 #include "asterisk/astdb.h"
 #include "asterisk/options.h"
+#include "asterisk/utf8.h"
 
 #include "../defaults.h"
 
@@ -296,7 +297,7 @@ int daemon(int, int);  /* defined in libresolv of all places */
 #define NUM_MSGS 64
 
 /*! Displayed copyright tag */
-#define COPYRIGHT_TAG "Copyright (C) 1999 - 2018, Digium, Inc. and others."
+#define COPYRIGHT_TAG "Copyright (C) 1999 - 2021, Sangoma Technologies Corporation and others."
 
 /*! \brief Welcome message when starting a CLI interface */
 #define WELCOME_MESSAGE \
@@ -387,6 +388,10 @@ static char canary_filename[128];
 static int multi_thread_safe;
 
 static char randompool[256];
+
+#ifdef HAVE_CAP
+static cap_t child_cap;
+#endif
 
 static int sig_alert_pipe[2] = { -1, -1 };
 static struct {
@@ -485,6 +490,7 @@ static char *handle_show_settings(struct ast_cli_entry *e, int cmd, struct ast_c
 	ast_cli(a->fd, "  Root console verbosity:      %d\n", option_verbose);
 	ast_cli(a->fd, "  Current console verbosity:   %d\n", ast_verb_console_get());
 	ast_cli(a->fd, "  Debug level:                 %d\n", option_debug);
+	ast_cli(a->fd, "  Trace level:                 %d\n", option_trace);
 	ast_cli(a->fd, "  Maximum load average:        %lf\n", ast_option_maxload);
 #if defined(HAVE_SYSINFO)
 	ast_cli(a->fd, "  Minimum free memory:         %ld MB\n", option_minmemfree);
@@ -509,6 +515,7 @@ static char *handle_show_settings(struct ast_cli_entry *e, int cmd, struct ast_c
 	ast_cli(a->fd, "  Transmit silence during rec: %s\n", ast_test_flag(&ast_options, AST_OPT_FLAG_TRANSMIT_SILENCE) ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Generic PLC:                 %s\n", ast_test_flag(&ast_options, AST_OPT_FLAG_GENERIC_PLC) ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Generic PLC on equal codecs: %s\n", ast_test_flag(&ast_options, AST_OPT_FLAG_GENERIC_PLC_ON_EQUAL_CODECS) ? "Enabled" : "Disabled");
+	ast_cli(a->fd, "  Hide Msg Chan AMI events:    %s\n", ast_opt_hide_messaging_ami_events ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Min DTMF duration::          %u\n", option_dtmfminduration);
 #if !defined(LOW_MEMORY)
 	ast_cli(a->fd, "  Cache media frames:          %s\n", ast_opt_cache_media_frames ? "Enabled" : "Disabled");
@@ -530,8 +537,8 @@ static char *handle_show_settings(struct ast_cli_entry *e, int cmd, struct ast_c
 
 	ast_cli(a->fd, "\n* Subsystems\n");
 	ast_cli(a->fd, "  -------------\n");
-	ast_cli(a->fd, "  Manager (AMI):               %s\n", check_manager_enabled() ? "Enabled" : "Disabled");
-	ast_cli(a->fd, "  Web Manager (AMI/HTTP):      %s\n", check_webmanager_enabled() ? "Enabled" : "Disabled");
+	ast_cli(a->fd, "  Manager (AMI):               %s\n", ast_manager_check_enabled() ? "Enabled" : "Disabled");
+	ast_cli(a->fd, "  Web Manager (AMI/HTTP):      %s\n", ast_webmanager_check_enabled() ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Call data records:           %s\n", ast_cdr_is_enabled() ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Realtime Architecture (ARA): %s\n", ast_realtime_enabled() ? "Enabled" : "Disabled");
 
@@ -1098,13 +1105,7 @@ static pid_t safe_exec_prep(int dualfork)
 
 	if (pid == 0) {
 #ifdef HAVE_CAP
-		cap_t cap = cap_from_text("cap_net_admin-eip");
-
-		if (cap_set_proc(cap)) {
-			/* Careful with order! Logging cannot happen after we close FDs */
-			ast_log(LOG_WARNING, "Unable to remove capabilities.\n");
-		}
-		cap_free(cap);
+		cap_set_proc(child_cap);
 #endif
 #ifdef HAVE_WORKING_FORK
 		if (ast_opt_high_priority) {
@@ -1803,10 +1804,8 @@ int ast_set_priority(int pri)
 	if (pri) {
 		sched.sched_priority = 10;
 		if (sched_setscheduler(0, SCHED_RR, &sched)) {
-			ast_log(LOG_WARNING, "Unable to set high priority\n");
 			return -1;
-		} else
-			ast_verb(1, "Set to realtime thread\n");
+		}
 	} else {
 		sched.sched_priority = 0;
 		/* According to the manpage, these parameters can never fail. */
@@ -3255,6 +3254,8 @@ static void ast_remotecontrol(char *data)
 	}
 
 	ast_verbose("Connected to Asterisk %s currently running on %s (pid = %d)\n", version, hostname, pid);
+	ast_init_logger_for_socket_console();
+
 	remotehostname = hostname;
 	if (el_hist == NULL || el == NULL)
 		ast_el_initialize();
@@ -3491,10 +3492,11 @@ static void main_atexit(void)
 int main(int argc, char *argv[])
 {
 	int c;
-	char * xarg = NULL;
 	int x;
 	int isroot = 1, rundir_exists = 0;
-	const char *runuser = NULL, *rungroup = NULL;
+	RAII_VAR(char *, runuser, NULL, ast_free);
+	RAII_VAR(char *, rungroup, NULL, ast_free);
+	RAII_VAR(char *, xarg, NULL, ast_free);
 	struct rlimit l;
 	static const char *getopt_settings = "BC:cde:FfG:ghIiL:M:mnpqRrs:TtU:VvWXx:";
 
@@ -3599,7 +3601,7 @@ int main(int argc, char *argv[])
 			break;
 #endif
 		case 'G':
-			rungroup = ast_strdupa(optarg);
+			rungroup = ast_strdup(optarg);
 			break;
 		case 'g':
 			ast_set_flag(&ast_options, AST_OPT_FLAG_DUMP_CORE);
@@ -3655,7 +3657,7 @@ int main(int argc, char *argv[])
 			ast_set_flag(&ast_options, AST_OPT_FLAG_CACHE_RECORD_FILES);
 			break;
 		case 'U':
-			runuser = ast_strdupa(optarg);
+			runuser = ast_strdup(optarg);
 			break;
 		case 'V':
 		case 'v':
@@ -3670,7 +3672,7 @@ int main(int argc, char *argv[])
 			ast_set_flag(&ast_options, AST_OPT_FLAG_NO_FORK | AST_OPT_FLAG_REMOTE);
 
 			ast_set_flag(&ast_options, AST_OPT_FLAG_EXEC | AST_OPT_FLAG_NO_COLOR);
-			xarg = ast_strdupa(optarg);
+			xarg = ast_strdup(optarg);
 			break;
 		case '?':
 			/* already processed. */
@@ -3749,9 +3751,9 @@ int main(int argc, char *argv[])
 #endif /* !defined(CONFIGURE_RAN_AS_ROOT) */
 
 	if ((!rungroup) && !ast_strlen_zero(ast_config_AST_RUN_GROUP))
-		rungroup = ast_config_AST_RUN_GROUP;
+		rungroup = ast_strdup(ast_config_AST_RUN_GROUP);
 	if ((!runuser) && !ast_strlen_zero(ast_config_AST_RUN_USER))
-		runuser = ast_config_AST_RUN_USER;
+		runuser = ast_strdup(ast_config_AST_RUN_USER);
 
 	/* Must install this signal handler up here to ensure that if the canary
 	 * fails to execute that it doesn't kill the Asterisk process.
@@ -3918,8 +3920,14 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+#ifdef HAVE_CAP
+	child_cap = cap_from_text("cap_net_admin-eip");
+#endif
 	/* Not a remote console? Start the daemon. */
 	asterisk_daemon(isroot, runuser, rungroup);
+#ifdef HAS_CAP
+	cap_free(child_cap);
+#endif
 	return 0;
 }
 
@@ -4063,6 +4071,7 @@ static void asterisk_daemon(int isroot, const char *runuser, const char *rungrou
 	check_init(ast_json_init(), "libjansson");
 	ast_ulaw_init();
 	ast_alaw_init();
+	ast_utf8_init();
 	tdd_init();
 	callerid_init();
 	ast_builtins_init();

@@ -62,6 +62,12 @@ struct sorcery_config {
 	/*! \brief Enable enforcement of a single configuration object of this type */
 	unsigned int single_object:1;
 
+	/*! \brief Configuration is invalid in some way, force reload */
+	unsigned int configuration_invalid:1;
+
+	/*! \brief Configuration contains at least one object with dynamic contents */
+	unsigned int has_dynamic_contents:1;
+
 	/*! \brief Filename of the configuration file */
 	char filename[];
 };
@@ -103,6 +109,7 @@ static struct ast_sorcery_wizard config_object_wizard = {
 	.open = sorcery_config_open,
 	.load = sorcery_config_load,
 	.reload = sorcery_config_reload,
+	.force_reload = sorcery_config_load,
 	.retrieve_id = sorcery_config_retrieve_id,
 	.retrieve_fields = sorcery_config_retrieve_fields,
 	.retrieve_multiple = sorcery_config_retrieve_multiple,
@@ -309,12 +316,13 @@ static int sorcery_is_configuration_met(const struct ast_sorcery *sorcery, const
 static void sorcery_config_internal_load(void *data, const struct ast_sorcery *sorcery, const char *type, unsigned int reload)
 {
 	struct sorcery_config *config = data;
-	struct ast_flags flags = { reload ? CONFIG_FLAG_FILEUNCHANGED : 0 };
+	struct ast_flags flags = { reload && !config->configuration_invalid && !config->has_dynamic_contents ? CONFIG_FLAG_FILEUNCHANGED : 0 };
 	struct ast_config *cfg = ast_config_load2(config->filename, config->uuid, flags);
 	struct ast_category *category = NULL;
 	RAII_VAR(struct ao2_container *, objects, NULL, ao2_cleanup);
 	const char *id = NULL;
 	unsigned int buckets = 0;
+	unsigned int has_dynamic_contents = 0;
 
 	if (!cfg) {
 		ast_log(LOG_ERROR, "Unable to load config file '%s'\n", config->filename);
@@ -326,6 +334,9 @@ static void sorcery_config_internal_load(void *data, const struct ast_sorcery *s
 		ast_log(LOG_ERROR, "Contents of config file '%s' are invalid and cannot be parsed\n", config->filename);
 		return;
 	}
+
+	/* When parsing the configuration assume it is valid until proven otherwise */
+	config->configuration_invalid = 0;
 
 	if (!config->buckets) {
 		while ((category = ast_category_browse_filtered(cfg, NULL, category, NULL))) {
@@ -360,6 +371,7 @@ static void sorcery_config_internal_load(void *data, const struct ast_sorcery *s
 		ast_log(LOG_ERROR, "Config file '%s' could not be loaded; configuration contains more than one object of type '%s'\n",
 			config->filename, type);
 		ast_config_destroy(cfg);
+		config->configuration_invalid = 1;
 		return;
 	}
 
@@ -372,6 +384,7 @@ static void sorcery_config_internal_load(void *data, const struct ast_sorcery *s
 		ast_log(LOG_ERROR, "Could not create bucket for new objects from '%s', keeping existing objects\n",
 			config->filename);
 		ast_config_destroy(cfg);
+		config->configuration_invalid = 1; /* Not strictly invalid but we want to try next time */
 		return;
 	}
 
@@ -392,6 +405,7 @@ static void sorcery_config_internal_load(void *data, const struct ast_sorcery *s
 			ast_log(LOG_ERROR, "Config file '%s' could not be loaded; configuration contains a duplicate object: '%s' of type '%s'\n",
 				config->filename, id, type);
 			ast_config_destroy(cfg);
+			config->configuration_invalid = 1;
 			return;
 		}
 
@@ -402,10 +416,12 @@ static void sorcery_config_internal_load(void *data, const struct ast_sorcery *s
 				ast_log(LOG_ERROR, "Config file '%s' could not be loaded due to error with object '%s' of type '%s'\n",
 					config->filename, id, type);
 				ast_config_destroy(cfg);
+				config->configuration_invalid = 1;
 				return;
 			} else {
 				ast_log(LOG_ERROR, "Could not create an object of type '%s' with id '%s' from configuration file '%s'\n",
 					type, id, config->filename);
+				config->configuration_invalid = 1;
 			}
 
 			ao2_cleanup(obj);
@@ -418,9 +434,15 @@ static void sorcery_config_internal_load(void *data, const struct ast_sorcery *s
 			ast_log(LOG_NOTICE, "Retaining existing configuration for object of type '%s' with id '%s'\n", type, id);
 		}
 
+		/* We store the dynamic contents state until the end in case this reload or load
+		 * gets rolled back.
+		 */
+		has_dynamic_contents |= ast_sorcery_object_has_dynamic_contents(obj);
+
 		ao2_link(objects, obj);
 	}
 
+	config->has_dynamic_contents = has_dynamic_contents;
 	ao2_global_obj_replace_unref(config->objects, objects);
 	ast_config_destroy(cfg);
 }

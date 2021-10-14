@@ -91,11 +91,6 @@ struct ast_format *ast_format_ulaw;
 struct ast_format *ast_format_alaw;
 
 /*!
- * \brief Built-in cached testlaw format.
- */
-struct ast_format *ast_format_testlaw;
-
-/*!
  * \brief Built-in cached gsm format.
  */
 struct ast_format *ast_format_gsm;
@@ -343,7 +338,6 @@ static void format_cache_shutdown(void)
 	ao2_replace(ast_format_g722, NULL);
 	ao2_replace(ast_format_siren7, NULL);
 	ao2_replace(ast_format_siren14, NULL);
-	ao2_replace(ast_format_testlaw, NULL);
 	ao2_replace(ast_format_g719, NULL);
 	ao2_replace(ast_format_opus, NULL);
 	ao2_replace(ast_format_codec2, NULL);
@@ -434,8 +428,6 @@ static void set_cached_format(const char *name, struct ast_format *format)
 		ao2_replace(ast_format_siren7, format);
 	} else if (!strcmp(name, "siren14")) {
 		ao2_replace(ast_format_siren14, format);
-	} else if (!strcmp(name, "testlaw")) {
-		ao2_replace(ast_format_testlaw, format);
 	} else if (!strcmp(name, "g719")) {
 		ao2_replace(ast_format_g719, format);
 	} else if (!strcmp(name, "opus")) {
@@ -554,4 +546,25 @@ int ast_format_cache_is_slinear(struct ast_format *format)
 	}
 
 	return 0;
+}
+
+struct ast_format *ast_format_cache_get_by_codec(const struct ast_codec *codec)
+{
+	struct ast_format *format;
+	struct ao2_iterator it;
+
+	for (it = ao2_iterator_init(formats, 0);
+		 (format = ao2_iterator_next(&it));
+		 ao2_ref(format, -1)) {
+		struct ast_codec *candidate = ast_format_get_codec(format);
+		if (codec == candidate) {
+			ao2_cleanup(candidate);
+			ao2_iterator_destroy(&it);
+			return format;
+		}
+		ao2_cleanup(candidate);
+	}
+
+	ao2_iterator_destroy(&it);
+	return NULL;
 }

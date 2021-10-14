@@ -790,7 +790,7 @@ struct ast_websocket;
 struct sip_socket {
 	enum ast_transport type;  /*!< UDP, TCP or TLS */
 	int fd;                   /*!< Filed descriptor, the actual socket */
-	uint16_t port;
+	uint16_t unused; /* since 1.6.2, retained not to change order/size of struct */
 	struct ast_tcptls_session_instance *tcptls_session;  /* If tcp or tls, a socket manager */
 	struct ast_websocket *ws_session; /*! If ws or wss, a WebSocket session */
 };
@@ -1052,6 +1052,7 @@ struct sip_pvt {
 		AST_STRING_FIELD(last_presence_message);   /*!< The last presence message for a subscription */
 		AST_STRING_FIELD(msg_body);     /*!< Text for a MESSAGE body */
 		AST_STRING_FIELD(tel_phone_context);       /*!< The phone-context portion of a TEL URI */
+		AST_STRING_FIELD(sessionunique_remote);    /*!< Remote UA's SDP Session unique parts */
 	);
 	char via[128];                          /*!< Via: header */
 	int maxforwards;                        /*!< SIP Loop prevention */

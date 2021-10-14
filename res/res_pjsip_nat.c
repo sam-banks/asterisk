@@ -19,6 +19,7 @@
 /*** MODULEINFO
 	<depend>pjproject</depend>
 	<depend>res_pjsip</depend>
+	<depend>res_pjsip_session</depend>
 	<support_level>core</support_level>
  ***/
 
@@ -32,9 +33,47 @@
 #include "asterisk/module.h"
 #include "asterisk/acl.h"
 
-static void rewrite_uri(pjsip_rx_data *rdata, pjsip_sip_uri *uri)
+/*! URI parameter for original host/port */
+#define AST_SIP_X_AST_ORIG_HOST "x-ast-orig-host"
+#define AST_SIP_X_AST_ORIG_HOST_LEN 15
+
+#define is_sip_uri(uri) \
+	(PJSIP_URI_SCHEME_IS_SIP(uri) || PJSIP_URI_SCHEME_IS_SIPS(uri))
+
+static void save_orig_contact_host(pjsip_rx_data *rdata, pjsip_sip_uri *uri)
 {
-	pj_cstr(&uri->host, rdata->pkt_info.src_name);
+	pjsip_param *x_orig_host;
+	pj_str_t p_value;
+#define COLON_LEN 1
+#define MAX_PORT_LEN 5
+
+	if (rdata->msg_info.msg->type != PJSIP_REQUEST_MSG ||
+		rdata->msg_info.msg->line.req.method.id != PJSIP_REGISTER_METHOD) {
+		return;
+	}
+
+	ast_debug(1, "Saving contact '%.*s:%d'\n",
+		(int)uri->host.slen, uri->host.ptr, uri->port);
+
+	x_orig_host = PJ_POOL_ALLOC_T(rdata->tp_info.pool, pjsip_param);
+	x_orig_host->name = pj_strdup3(rdata->tp_info.pool, AST_SIP_X_AST_ORIG_HOST);
+	p_value.slen = pj_strlen(&uri->host) + COLON_LEN + MAX_PORT_LEN;
+	p_value.ptr = (char*)pj_pool_alloc(rdata->tp_info.pool, p_value.slen + 1);
+	p_value.slen = snprintf(p_value.ptr, p_value.slen + 1, "%.*s:%d", (int)uri->host.slen, uri->host.ptr, uri->port);
+	pj_strassign(&x_orig_host->value, &p_value);
+	pj_list_insert_before(&uri->other_param, x_orig_host);
+
+	return;
+}
+
+static void rewrite_uri(pjsip_rx_data *rdata, pjsip_sip_uri *uri, pj_pool_t *pool)
+{
+
+	if (pj_strcmp2(&uri->host, rdata->pkt_info.src_name) != 0) {
+		save_orig_contact_host(rdata, uri);
+	}
+
+	pj_strdup2(pool, &uri->host, rdata->pkt_info.src_name);
 	uri->port = rdata->pkt_info.src_port;
 	if (!strcasecmp("WSS", rdata->tp_info.transport->type_name)) {
 		/* WSS is special, we don't want to overwrite the URI at all as it needs to be ws */
@@ -112,14 +151,14 @@ static int rewrite_route_set(pjsip_rx_data *rdata, pjsip_dialog *dlg)
 
 	if (rr) {
 		uri = pjsip_uri_get_uri(&rr->name_addr);
-		rewrite_uri(rdata, uri);
+		rewrite_uri(rdata, uri, rdata->tp_info.pool);
 		res = 0;
 	}
 
 	if (dlg && !pj_list_empty(&dlg->route_set) && !dlg->route_set_frozen) {
 		pjsip_routing_hdr *route = dlg->route_set.next;
 		uri = pjsip_uri_get_uri(&route->name_addr);
-		rewrite_uri(rdata, uri);
+		rewrite_uri(rdata, uri, dlg->pool);
 		res = 0;
 	}
 
@@ -145,7 +184,7 @@ static int rewrite_contact(pjsip_rx_data *rdata, pjsip_dialog *dlg)
 	if (contact && !contact->star && (PJSIP_URI_SCHEME_IS_SIP(contact->uri) || PJSIP_URI_SCHEME_IS_SIPS(contact->uri))) {
 		pjsip_sip_uri *uri = pjsip_uri_get_uri(contact->uri);
 
-		rewrite_uri(rdata, uri);
+		rewrite_uri(rdata, uri, rdata->tp_info.pool);
 
 		if (dlg && pj_list_empty(&dlg->route_set) && (!dlg->remote.contact
 			|| pjsip_uri_cmp(PJSIP_URI_IN_REQ_URI, dlg->remote.contact->uri, contact->uri))) {
@@ -264,7 +303,66 @@ static int nat_invoke_hook(void *obj, void *arg, int flags)
 	return 0;
 }
 
-static pj_status_t nat_on_tx_message(pjsip_tx_data *tdata)
+static void restore_orig_contact_host(pjsip_tx_data *tdata)
+{
+	pjsip_contact_hdr *contact;
+	pj_str_t x_name = { AST_SIP_X_AST_ORIG_HOST, AST_SIP_X_AST_ORIG_HOST_LEN };
+	pjsip_param *x_orig_host;
+	pjsip_sip_uri *uri;
+	pjsip_hdr *hdr;
+
+	if (tdata->msg->type == PJSIP_REQUEST_MSG) {
+		if (is_sip_uri(tdata->msg->line.req.uri)) {
+			uri = pjsip_uri_get_uri(tdata->msg->line.req.uri);
+			while ((x_orig_host = pjsip_param_find(&uri->other_param, &x_name))) {
+				pj_list_erase(x_orig_host);
+			}
+		}
+		for (hdr = tdata->msg->hdr.next; hdr != &tdata->msg->hdr; hdr = hdr->next) {
+			if (hdr->type == PJSIP_H_TO) {
+				if (is_sip_uri(((pjsip_fromto_hdr *) hdr)->uri)) {
+					uri = pjsip_uri_get_uri(((pjsip_fromto_hdr *) hdr)->uri);
+					while ((x_orig_host = pjsip_param_find(&uri->other_param, &x_name))) {
+						pj_list_erase(x_orig_host);
+					}
+				}
+			}
+		}
+	}
+
+	if (tdata->msg->type != PJSIP_RESPONSE_MSG) {
+		return;
+	}
+
+	contact = pjsip_msg_find_hdr(tdata->msg, PJSIP_H_CONTACT, NULL);
+	while (contact) {
+		pjsip_sip_uri *contact_uri = pjsip_uri_get_uri(contact->uri);
+		x_orig_host = pjsip_param_find(&contact_uri->other_param, &x_name);
+
+		if (x_orig_host) {
+			char host_port[x_orig_host->value.slen + 1];
+			char *sep;
+
+			ast_debug(1, "Restoring contact %.*s:%d  to %.*s\n", (int)contact_uri->host.slen,
+				contact_uri->host.ptr, contact_uri->port,
+				(int)x_orig_host->value.slen, x_orig_host->value.ptr);
+
+			strncpy(host_port, x_orig_host->value.ptr, x_orig_host->value.slen);
+			host_port[x_orig_host->value.slen] = '\0';
+			sep = strchr(host_port, ':');
+			if (sep) {
+				*sep = '\0';
+				sep++;
+				pj_strdup2(tdata->pool, &contact_uri->host, host_port);
+				contact_uri->port = strtol(sep, NULL, 10);
+			}
+			pj_list_erase(x_orig_host);
+		}
+		contact = pjsip_msg_find_hdr(tdata->msg, PJSIP_H_CONTACT, contact->next);
+	}
+}
+
+static pj_status_t process_nat(pjsip_tx_data *tdata)
 {
 	RAII_VAR(struct ao2_container *, transport_states, NULL, ao2_cleanup);
 	RAII_VAR(struct ast_sip_transport *, transport, NULL, ao2_cleanup);
@@ -334,12 +432,24 @@ static pj_status_t nat_on_tx_message(pjsip_tx_data *tdata)
 	}
 
 	if (!ast_sockaddr_isnull(&transport_state->external_signaling_address)) {
-		/* Update the contact header with the external address */
-		if (uri || (uri = nat_get_contact_sip_uri(tdata))) {
-			pj_strdup2(tdata->pool, &uri->host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));
-			if (transport->external_signaling_port) {
-				uri->port = transport->external_signaling_port;
-				ast_debug(4, "Re-wrote Contact URI port to %d\n", uri->port);
+		pjsip_cseq_hdr *cseq = PJSIP_MSG_CSEQ_HDR(tdata->msg);
+
+		/* Update the Contact header with the external address. We only do this if
+		 * a CSeq is not present (which should not happen - but we are extra safe),
+		 * if a request is being sent, or if a response is sent that is not a response
+		 * to a REGISTER. We specifically don't do this for a response to a REGISTER
+		 * as the Contact headers would contain the registered Contacts, and not our
+		 * own Contact.
+		 */
+		if (!cseq || tdata->msg->type == PJSIP_REQUEST_MSG ||
+			pjsip_method_cmp(&cseq->method, &pjsip_register_method)) {
+			/* We can only rewrite the URI when one is present */
+			if (uri || (uri = nat_get_contact_sip_uri(tdata))) {
+				pj_strdup2(tdata->pool, &uri->host, ast_sockaddr_stringify_host(&transport_state->external_signaling_address));
+				if (transport->external_signaling_port) {
+					uri->port = transport->external_signaling_port;
+					ast_debug(4, "Re-wrote Contact URI port to %d\n", uri->port);
+				}
 			}
 		}
 
@@ -363,6 +473,16 @@ static pj_status_t nat_on_tx_message(pjsip_tx_data *tdata)
 
 	return PJ_SUCCESS;
 }
+
+static pj_status_t nat_on_tx_message(pjsip_tx_data *tdata) {
+	pj_status_t rc;
+
+	rc = process_nat(tdata);
+	restore_orig_contact_host(tdata);
+
+	return rc;
+}
+
 
 static pjsip_module nat_module = {
 	.name = { "NAT", 3 },

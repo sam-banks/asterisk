@@ -232,7 +232,7 @@ int ast_format_cap_append_by_type(struct ast_format_cap *cap, enum ast_media_typ
 			continue;
 		}
 
-		format = ast_format_cache_get(codec->name);
+		format = ast_format_cache_get_by_codec(codec);
 
 		if (format == ast_format_none) {
 			ao2_ref(format, -1);
@@ -699,11 +699,19 @@ int ast_format_cap_identical(const struct ast_format_cap *cap1, const struct ast
 	return internal_format_cap_identical(cap2, cap1);
 }
 
-const char *ast_format_cap_get_names(struct ast_format_cap *cap, struct ast_str **buf)
+static const char *__ast_format_cap_get_names(const struct ast_format_cap *cap, struct ast_str **buf, int append)
 {
 	int i;
 
-	ast_str_set(buf, 0, "(");
+	if (!buf || !*buf) {
+		return "";
+	}
+
+	if (append) {
+		ast_str_append(buf, 0, "(");
+	} else {
+		ast_str_set(buf, 0, "(");
+	}
 
 	if (!cap || !AST_VECTOR_SIZE(&cap->preference_order)) {
 		ast_str_append(buf, 0, "nothing)");
@@ -725,7 +733,17 @@ const char *ast_format_cap_get_names(struct ast_format_cap *cap, struct ast_str 
 	return ast_str_buffer(*buf);
 }
 
-int ast_format_cap_empty(struct ast_format_cap *cap)
+const char *ast_format_cap_get_names(const struct ast_format_cap *cap, struct ast_str **buf)
+{
+	return __ast_format_cap_get_names(cap, buf, 0);
+}
+
+const char *ast_format_cap_append_names(const struct ast_format_cap *cap, struct ast_str **buf)
+{
+	return __ast_format_cap_get_names(cap, buf, 1);
+}
+
+int ast_format_cap_empty(const struct ast_format_cap *cap)
 {
 	int count = ast_format_cap_count(cap);
 

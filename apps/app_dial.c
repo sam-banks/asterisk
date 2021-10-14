@@ -74,7 +74,7 @@
 			Attempt to connect to another device or endpoint and bridge the call.
 		</synopsis>
 		<syntax>
-			<parameter name="Technology/Resource" required="true" argsep="&amp;">
+			<parameter name="Technology/Resource" required="false" argsep="&amp;">
 				<argument name="Technology/Resource" required="true">
 					<para>Specification of the device(s) to dial.  These must be in the format of
 					<literal>Technology/Resource</literal>, where <replaceable>Technology</replaceable>
@@ -93,11 +93,17 @@
 			</parameter>
 			<parameter name="options" required="false">
 				<optionlist>
-				<option name="A">
-					<argument name="x" required="true">
+				<option name="A" argsep=":">
+					<argument name="x">
 						<para>The file to play to the called party</para>
 					</argument>
-					<para>Play an announcement to the called party, where <replaceable>x</replaceable> is the prompt to be played</para>
+					<argument name="y">
+						<para>The file to play to the calling party</para>
+					</argument>
+					<para>Play an announcement to the called and/or calling parties, where <replaceable>x</replaceable>
+					is the prompt to be played to the called party and <replaceable>y</replaceable> is the prompt
+					to be played to the caller. The files may be different and will be played to each party
+					simultaneously.</para>
 				</option>
 				<option name="a">
 					<para>Immediately answer the calling channel when the called channel answers in
@@ -1003,7 +1009,8 @@ static void do_forward(struct chanlist *o, struct cause_args *num,
 			 * any Dial operations that happen later won't record CC interfaces.
 			 */
 			ast_ignore_cc(o->chan);
-			ast_log(LOG_NOTICE, "Not accepting call completion offers from call-forward recipient %s\n", ast_channel_name(o->chan));
+			ast_verb(3, "Not accepting call completion offers from call-forward recipient %s\n",
+				ast_channel_name(o->chan));
 		} else
 			ast_log(LOG_NOTICE,
 				"Forwarding failed to create channel to dial '%s/%s' (cause = %d)\n",
@@ -1203,7 +1210,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 	struct privacy_args *pa,
 	const struct cause_args *num_in, int *result, char *dtmf_progress,
 	const int ignore_cc,
-	struct ast_party_id *forced_clid, struct ast_party_id *stored_clid)
+	struct ast_party_id *forced_clid, struct ast_party_id *stored_clid,
+	struct ast_bridge_config *config)
 {
 	struct cause_args num = *num_in;
 	int prestart = num.busy + num.congestion + num.nochan;
@@ -1222,6 +1230,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 	int sent_ring = 0;
 	int sent_progress = 0;
 	struct timeval start = ast_tvnow();
+	SCOPE_ENTER(3, "%s\n", ast_channel_name(in));
 
 	if (single) {
 		/* Turn off hold music, etc */
@@ -1237,7 +1246,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 				*to = -1;
 				strcpy(pa->status, "CONGESTION");
 				ast_channel_publish_dial(in, outgoing->chan, NULL, pa->status);
-				return NULL;
+				SCOPE_EXIT_RTN_VALUE(NULL, "%s: can't be made compat with %s\n",
+					ast_channel_name(in), ast_channel_name(outgoing->chan));
 			}
 		}
 
@@ -1279,7 +1289,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 			if (is_cc_recall) {
 				ast_cc_failed(cc_recall_core_id, "Everyone is busy/congested for the recall. How sad");
 			}
-			return NULL;
+			SCOPE_EXIT_RTN_VALUE(NULL, "%s: No outging channels available\n", ast_channel_name(in));
 		}
 		winner = ast_waitfor_n(watchers, pos, to);
 		AST_LIST_TRAVERSE(out_chans, o, node) {
@@ -1388,6 +1398,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 				case AST_CONTROL_ANSWER:
 					/* This is our guy if someone answered. */
 					if (!peer) {
+						ast_trace(-1, "%s answered %s\n", ast_channel_name(c), ast_channel_name(in));
 						ast_verb(3, "%s answered %s\n", ast_channel_name(c), ast_channel_name(in));
 						if (o->orig_chan_name
 							&& strcmp(o->orig_chan_name, ast_channel_name(c))) {
@@ -1415,6 +1426,18 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 							}
 						}
 						peer = c;
+						/* Answer can optionally include a topology */
+						if (f->subclass.topology) {
+							/*
+							 * We need to bump the refcount on the topology to prevent it
+							 * from being cleaned up when the frame is cleaned up.
+							 */
+							config->answer_topology = ao2_bump(f->subclass.topology);
+							ast_trace(-1, "%s Found topology in frame: %p %p %s\n",
+								ast_channel_name(peer), f, config->answer_topology,
+								ast_str_tmp(256, ast_stream_topology_to_str(config->answer_topology, &STR_TMP)));
+						}
+
 						/* Inform everyone else that they've been canceled.
 						 * The dial end event for the peer will be sent out after
 						 * other Dial options have been handled.
@@ -1542,12 +1565,14 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 						ast_channel_stage_snapshot_done(in);
 						ast_channel_unlock(in);
 						sent_progress = 1;
-					}
-					if (!ast_strlen_zero(dtmf_progress)) {
-						ast_verb(3,
-							"Sending DTMF '%s' to the called party as result of receiving a PROGRESS message.\n",
-							dtmf_progress);
-						ast_dtmf_stream(c, in, dtmf_progress, 250, 0);
+
+						if (!ast_strlen_zero(dtmf_progress)) {
+							ast_verb(3,
+								"Sending DTMF '%s' to the called party as result of "
+								"receiving a PROGRESS message.\n",
+								dtmf_progress);
+							ast_dtmf_stream(c, in, dtmf_progress, 250, 0);
+						}
 					}
 					ast_channel_publish_dial(in, c, NULL, "PROGRESS");
 					break;
@@ -1705,7 +1730,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 				if (is_cc_recall) {
 					ast_cc_completed(in, "CC completed, although the caller hung up (cancelled)");
 				}
-				return NULL;
+				SCOPE_EXIT_RTN_VALUE(NULL, "%s: Caller hung up\n", ast_channel_name(in));
 			}
 
 			/* now f is guaranteed non-NULL */
@@ -1725,7 +1750,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 						if (is_cc_recall) {
 							ast_cc_completed(in, "CC completed, but the caller used DTMF to exit");
 						}
-						return NULL;
+						SCOPE_EXIT_RTN_VALUE(NULL, "%s: Caller pressed %c to end call\n",
+							ast_channel_name(in), f->subclass.integer);
 					}
 					ast_channel_unlock(in);
 				}
@@ -1740,7 +1766,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 					if (is_cc_recall) {
 						ast_cc_completed(in, "CC completed, but the caller hung up with DTMF");
 					}
-					return NULL;
+					SCOPE_EXIT_RTN_VALUE(NULL, "%s: Caller requested disconnect\n",
+						ast_channel_name(in));
 				}
 			}
 
@@ -1846,7 +1873,8 @@ skip_frame:;
 	if (is_cc_recall) {
 		ast_cc_completed(in, "Recall completed!");
 	}
-	return peer;
+	SCOPE_EXIT_RTN_VALUE(peer, "%s: %s%s\n", ast_channel_name(in),
+		peer ? "Answered by " : "No answer", peer ? ast_channel_name(peer) : "");
 }
 
 static int detect_disconnect(struct ast_channel *chan, char code, struct ast_str **featurecode)
@@ -2003,7 +2031,7 @@ static int do_privacy(struct ast_channel *chan, struct ast_channel *peer,
 		/* well, there seems basically two choices. Just patch the caller thru immediately,
 			  or,... put 'em thru to voicemail. */
 		/* since the callee may have hung up, let's do the voicemail thing, no database decision */
-		ast_log(LOG_NOTICE, "privacy: no valid response from the callee. Sending the caller to voicemail, the callee isn't responding\n");
+		ast_verb(3, "privacy: no valid response from the callee. Sending the caller to voicemail, the callee isn't responding\n");
 		/* XXX should we set status to DENY ? */
 		/* XXX what about the privacy flags ? */
 		break;
@@ -2214,7 +2242,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	struct dial_head out_chans = AST_LIST_HEAD_NOLOCK_INIT_VALUE; /* list of destinations */
 	struct chanlist *outgoing;
 	struct chanlist *tmp;
-	struct ast_channel *peer;
+	struct ast_channel *peer = NULL;
 	int to; /* timeout */
 	struct cause_args num = { chan, 0, 0, 0 };
 	int cause;
@@ -2268,6 +2296,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	 */
 	struct ast_party_caller caller;
 	int max_forwards;
+	SCOPE_ENTER(1, "%s: Data: %s\n", ast_channel_name(chan), data);
 
 	/* Reset all DIAL variables back to blank, to prevent confusion (in case we don't reset all of them). */
 	ast_channel_lock(chan);
@@ -2291,13 +2320,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 		ast_log(LOG_WARNING, "Cannot place outbound call from channel '%s'. Max forwards exceeded\n",
 				ast_channel_name(chan));
 		pbx_builtin_setvar_helper(chan, "DIALSTATUS", "BUSY");
-		return -1;
-	}
-
-	if (ast_strlen_zero(data)) {
-		ast_log(LOG_WARNING, "Dial requires an argument (technology/resource)\n");
-		pbx_builtin_setvar_helper(chan, "DIALSTATUS", pa.status);
-		return -1;
+		SCOPE_EXIT_RTN_VALUE(-1, "%s: Max forwards exceeded\n", ast_channel_name(chan));
 	}
 
 	if (ast_check_hangup_locked(chan)) {
@@ -2315,21 +2338,15 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 		 */
 		ast_verb(3, "Caller hung up before dial.\n");
 		pbx_builtin_setvar_helper(chan, "DIALSTATUS", "CANCEL");
-		return -1;
+		SCOPE_EXIT_RTN_VALUE(-1, "%s: Caller hung up before dial\n", ast_channel_name(chan));
 	}
 
-	parse = ast_strdupa(data);
+	parse = ast_strdupa(data ?: "");
 
 	AST_STANDARD_APP_ARGS(args, parse);
 
 	if (!ast_strlen_zero(args.options) &&
 		ast_app_parse_options64(dial_exec_options, &opts, opt_args, args.options)) {
-		pbx_builtin_setvar_helper(chan, "DIALSTATUS", pa.status);
-		goto done;
-	}
-
-	if (ast_strlen_zero(args.peers)) {
-		ast_log(LOG_WARNING, "Dial requires an argument (technology/resource)\n");
 		pbx_builtin_setvar_helper(chan, "DIALSTATUS", pa.status);
 		goto done;
 	}
@@ -2359,7 +2376,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	if (ast_test_flag64(&opts, OPT_DURATION_STOP) && !ast_strlen_zero(opt_args[OPT_ARG_DURATION_STOP])) {
 		calldurationlimit.tv_sec = atoi(opt_args[OPT_ARG_DURATION_STOP]);
 		if (!calldurationlimit.tv_sec) {
-			ast_log(LOG_WARNING, "Dial does not accept S(%s), hanging up.\n", opt_args[OPT_ARG_DURATION_STOP]);
+			ast_log(LOG_WARNING, "Dial does not accept S(%s)\n", opt_args[OPT_ARG_DURATION_STOP]);
 			pbx_builtin_setvar_helper(chan, "DIALSTATUS", pa.status);
 			goto done;
 		}
@@ -2506,14 +2523,23 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 
 	/* loop through the list of dial destinations */
 	rest = args.peers;
-	while ((cur = strsep(&rest, "&")) ) {
+	while ((cur = strsep(&rest, "&"))) {
 		struct ast_channel *tc; /* channel for this destination */
-		/* Get a technology/resource pair */
-		char *number = cur;
-		char *tech = strsep(&number, "/");
+		char *number;
+		char *tech;
 		size_t tech_len;
 		size_t number_len;
 		struct ast_stream_topology *topology;
+
+		cur = ast_strip(cur);
+		if (ast_strlen_zero(cur)) {
+			/* No tech/resource in this position. */
+			continue;
+		}
+
+		/* Get a technology/resource pair */
+		number = cur;
+		tech = strsep(&number, "/");
 
 		num_dialed++;
 		if (ast_strlen_zero(number)) {
@@ -2713,6 +2739,17 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 		AST_LIST_INSERT_TAIL(&out_chans, tmp, node);
 	}
 
+	if (AST_LIST_EMPTY(&out_chans)) {
+		ast_verb(3, "No devices or endpoints to dial (technology/resource)\n");
+		if (continue_exec) {
+			/* There is no point in having RetryDial try again */
+			*continue_exec = 1;
+		}
+		strcpy(pa.status, "CHANUNAVAIL");
+		res = 0;
+		goto out;
+	}
+
 	/*
 	 * PREDIAL: Run gosub on all of the callee channels
 	 *
@@ -2826,7 +2863,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	}
 
 	peer = wait_for_answer(chan, &out_chans, &to, peerflags, opt_args, &pa, &num, &result,
-		dtmf_progress, ignore_cc, &forced_clid, &stored_clid);
+		dtmf_progress, ignore_cc, &forced_clid, &stored_clid, &config);
 
 	if (!peer) {
 		if (result) {
@@ -2910,33 +2947,71 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 			int digit = 0;
 			struct ast_channel *chans[2];
 			struct ast_channel *active_chan;
+			char *calledfile = NULL, *callerfile = NULL;
+			int calledstream = 0, callerstream = 0;
 
 			chans[0] = chan;
 			chans[1] = peer;
 
-			/* we need to stream the announcement to the called party when the OPT_ARG_ANNOUNCE (-A) is setted */
+			/* we need to stream the announcement(s) when the OPT_ARG_ANNOUNCE (-A) is set */
+			callerfile = opt_args[OPT_ARG_ANNOUNCE];
+			calledfile = strsep(&callerfile, ":");
 
-			/* stream the file */
-			res = ast_streamfile(peer, opt_args[OPT_ARG_ANNOUNCE], ast_channel_language(peer));
-			if (res) {
-				res = 0;
-				ast_log(LOG_ERROR, "error streaming file '%s' to callee\n", opt_args[OPT_ARG_ANNOUNCE]);
+			/* stream the file(s) */
+			if (!ast_strlen_zero(calledfile)) {
+				res = ast_streamfile(peer, calledfile, ast_channel_language(peer));
+				if (res) {
+					res = 0;
+					ast_log(LOG_ERROR, "error streaming file '%s' to callee\n", calledfile);
+				} else {
+					calledstream = 1;
+				}
+			}
+			if (!ast_strlen_zero(callerfile)) {
+				res = ast_streamfile(chan, callerfile, ast_channel_language(chan));
+				if (res) {
+					res = 0;
+					ast_log(LOG_ERROR, "error streaming file '%s' to caller\n", callerfile);
+				} else {
+					callerstream = 1;
+				}
 			}
 
+			/* can't use ast_waitstream, because we're streaming two files at once, and can't block
+				We'll need to handle both channels at once. */
+
 			ast_channel_set_flag(peer, AST_FLAG_END_DTMF_ONLY);
-			while (ast_channel_stream(peer)) {
-				int ms;
+			while (ast_channel_stream(peer) || ast_channel_stream(chan)) {
+				int mspeer, mschan;
 
-				ms = ast_sched_wait(ast_channel_sched(peer));
+				mspeer = ast_sched_wait(ast_channel_sched(peer));
+				mschan = ast_sched_wait(ast_channel_sched(chan));
 
-				if (ms < 0 && !ast_channel_timingfunc(peer)) {
-					ast_stopstream(peer);
+				if (calledstream) {
+					if (mspeer < 0 && !ast_channel_timingfunc(peer)) {
+						ast_stopstream(peer);
+						calledstream = 0;
+					}
+				}
+				if (callerstream) {
+					if (mschan < 0 && !ast_channel_timingfunc(chan)) {
+						ast_stopstream(chan);
+						callerstream = 0;
+					}
+				}
+
+				if (!calledstream && !callerstream) {
 					break;
 				}
-				if (ms < 0)
-					ms = 1000;
 
-				active_chan = ast_waitfor_n(chans, 2, &ms);
+				if (mspeer < 0)
+					mspeer = 1000;
+
+				if (mschan < 0)
+					mschan = 1000;
+
+				/* wait for the lowest maximum of the two */
+				active_chan = ast_waitfor_n(chans, 2, (mspeer > mschan ? &mschan : &mspeer));
 				if (active_chan) {
 					struct ast_channel *other_chan;
 					struct ast_frame *fr = ast_read(active_chan);
@@ -2986,6 +3061,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 					ast_frfree(fr);
 				}
 				ast_sched_runq(ast_channel_sched(peer));
+				ast_sched_runq(ast_channel_sched(chan));
 			}
 			ast_channel_clear_flag(peer, AST_FLAG_END_DTMF_ONLY);
 		}
@@ -3255,6 +3331,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 				ast_channel_setoption(chan, AST_OPTION_OPRMODE, &oprmode, sizeof(oprmode), 0);
 			}
 			setup_peer_after_bridge_goto(chan, peer, &opts, opt_args);
+
 			res = ast_bridge_call(chan, peer, &config);
 		}
 	}
@@ -3292,6 +3369,18 @@ out:
 	}
 
 done:
+	if (config.answer_topology) {
+		ast_trace(2, "%s Cleaning up topology: %p %s\n",
+			peer ? ast_channel_name(peer) : "<no channel>", &config.answer_topology,
+			ast_str_tmp(256, ast_stream_topology_to_str(config.answer_topology, &STR_TMP)));
+
+		/*
+		 * At this point, the channel driver that answered should have bumped the
+		 * topology refcount for itself.  Here we're cleaning up the reference we added
+		 * in wait_for_answer().
+		 */
+		ast_stream_topology_free(config.answer_topology);
+	}
 	if (config.warning_sound) {
 		ast_free((char *)config.warning_sound);
 	}
@@ -3302,7 +3391,7 @@ done:
 		ast_free((char *)config.start_sound);
 	}
 	ast_ignore_cc(chan);
-	return res;
+	SCOPE_EXIT_RTN_VALUE(res, "%s: Done\n", ast_channel_name(chan));
 }
 
 static int dial_exec(struct ast_channel *chan, const char *data)

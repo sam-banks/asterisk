@@ -68,6 +68,8 @@ enum user_profile_flags {
 	USER_OPT_ANNOUNCE_JOIN_LEAVE_REVIEW = (1 << 16), /*!< modifies ANNOUNCE_JOIN_LEAVE - user reviews the recording before continuing */
 	USER_OPT_SEND_EVENTS = (1 << 17), /*!< Send text message events to users */
 	USER_OPT_ECHO_EVENTS = (1 << 18), /*!< Send events only to the admin(s) */
+	USER_OPT_TEXT_MESSAGING = (1 << 19), /*!< Send text messages to the user */
+	USER_OPT_ANSWER_CHANNEL = (1 << 20), /*!< Sets if the channel should be answered if currently unanswered */
 };
 
 enum bridge_profile_flags {
@@ -86,6 +88,7 @@ enum bridge_profile_flags {
 	BRIDGE_OPT_REMB_BEHAVIOR_AVERAGE_ALL = (1 << 12), /*!< The average of all REMB reports in the entire bridge is sent to each sender */
 	BRIDGE_OPT_REMB_BEHAVIOR_LOWEST_ALL = (1 << 13), /*!< The lowest estimated maximum bitrate from all receivers is sent to each sender */
 	BRIDGE_OPT_REMB_BEHAVIOR_HIGHEST_ALL = (1 << 14), /*!< The highest estimated maximum bitrate from all receivers is sent to each sender */
+	BRIDGE_OPT_REMB_BEHAVIOR_FORCE = (1 << 15), /*!< Force the REMB estimated bitrate to that specifiec in remb_estimated_bitrate */
 };
 
 enum conf_menu_action_id {
@@ -228,11 +231,13 @@ struct bridge_profile {
 	unsigned int flags;
 	unsigned int max_members;          /*!< The maximum number of participants allowed in the conference */
 	unsigned int internal_sample_rate; /*!< The internal sample rate of the bridge. 0 when set to auto adjust mode. */
+	unsigned int maximum_sample_rate; /*!< The maximum sample rate of the bridge. 0 when set to no maximum. */
 	unsigned int mix_interval;  /*!< The internal mixing interval used by the bridge. When set to 0 the bridgewill use a default interval. */
 	struct bridge_profile_sounds *sounds;
 	char regcontext[AST_MAX_CONTEXT];
 	unsigned int video_update_discard; /*!< Amount of time after sending a video update request that subsequent requests should be discarded */
 	unsigned int remb_send_interval; /*!< Interval at which a combined REMB frame is sent to video sources */
+	unsigned int remb_estimated_bitrate; /*!< Bitrate sent when BRIDGE_OPT_REMB_BEHAVIOR_FORCE is set */
 };
 
 /*! \brief The structure that represents a conference bridge */

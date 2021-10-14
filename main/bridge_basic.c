@@ -2638,7 +2638,7 @@ static int retransfer_enter(struct attended_transfer_properties *props)
 		&props->original_transferer_colp);
 	ast_party_id_reset(&ast_channel_connected(props->recall_target)->priv);
 
-	common_recall_channel_setup(props->recall_target, props->recall_target);
+	common_recall_channel_setup(props->recall_target, props->transferer);
 	ast_channel_unlock(props->recall_target);
 	ast_channel_unlock(props->transferer);
 
@@ -3352,13 +3352,12 @@ static int feature_attended_transfer(struct ast_bridge_channel *bridge_channel, 
 	/* Grab the extension to transfer to */
 	if (grab_transfer(bridge_channel->chan, exten, sizeof(exten), props->context)) {
 		/*
-		 * XXX The warning here really should be removed.  While the
-		 * message is accurate, this is a normal exit for when the user
-		 * fails to specify a valid transfer target.  e.g., The user
+		 * This is a normal exit for when the user fails
+		 * to specify a valid transfer target.  e.g., The user
 		 * hungup, didn't dial any digits, or dialed an invalid
 		 * extension.
 		 */
-		ast_log(LOG_WARNING, "Channel %s: Unable to acquire target extension for attended transfer.\n",
+		ast_verb(3, "Channel %s: Unable to acquire target extension for attended transfer.\n",
 			ast_channel_name(bridge_channel->chan));
 		ast_bridge_channel_write_unhold(bridge_channel);
 		attended_transfer_properties_shutdown(props);

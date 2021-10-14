@@ -69,7 +69,7 @@ struct parked_subscription_datastore {
 struct parked_subscription_data {
 	struct transfer_channel_data *transfer_data;
 	char *parkee_uuid;
-	int hangup_after:1;
+	unsigned int hangup_after:1;
 	char parker_uuid[0];
 };
 
@@ -179,7 +179,8 @@ static int create_parked_subscription_full(struct ast_channel *chan, const char 
 	struct parked_subscription_data *subscription_data;
 
 	char *parker_uuid = ast_strdupa(ast_channel_uniqueid(chan));
-	size_t parker_uuid_size = strlen(parker_uuid) + 1;
+	size_t parker_uuid_size;
+	size_t parkee_uuid_size;
 
 	/* If there is already a subscription, get rid of it. */
 	wipe_subscription_datastore(chan);
@@ -193,8 +194,11 @@ static int create_parked_subscription_full(struct ast_channel *chan, const char 
 		return -1;
 	}
 
+	parker_uuid_size = strlen(parker_uuid) + 1;
+	parkee_uuid_size = strlen(parkee_uuid) + 1;
+
 	if (!(subscription_data = ast_calloc(1, sizeof(*subscription_data) + parker_uuid_size +
-			strlen(parkee_uuid) + 1))) {
+			parkee_uuid_size))) {
 		ast_datastore_free(datastore);
 		ast_free(parked_datastore);
 		return -1;
@@ -207,8 +211,8 @@ static int create_parked_subscription_full(struct ast_channel *chan, const char 
 
 	subscription_data->hangup_after = hangup_after;
 	subscription_data->parkee_uuid = subscription_data->parker_uuid + parker_uuid_size;
-	strcpy(subscription_data->parkee_uuid, parkee_uuid);
-	strcpy(subscription_data->parker_uuid, parker_uuid);
+	ast_copy_string(subscription_data->parkee_uuid, parkee_uuid, parkee_uuid_size);
+	ast_copy_string(subscription_data->parker_uuid, parker_uuid, parker_uuid_size);
 
 	if (!(parked_datastore->parked_subscription = stasis_subscribe_pool(ast_parking_topic(), parker_update_cb, subscription_data))) {
 		return -1;
@@ -656,7 +660,6 @@ static int parking_duration_callback(struct ast_bridge_channel *bridge_channel, 
 			dial_string_flat, PARK_DIAL_CONTEXT, ast_get_extension_registrar(existing_exten));
 	} else if (ast_add_extension2_nolock(park_dial_context, 1, dial_string_flat, 1, NULL, NULL,
 			"Dial", duplicate_returnexten, ast_free_ptr, BASE_REGISTRAR, NULL, 0)) {
-			ast_free(duplicate_returnexten);
 		ast_log(LOG_ERROR, "Failed to create parking redial parker extension %s@%s - Dial(%s)\n",
 			dial_string_flat, PARK_DIAL_CONTEXT, returnexten);
 	}

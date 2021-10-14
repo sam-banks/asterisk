@@ -76,6 +76,7 @@
 #include "asterisk/stasis_channels.h"
 #include "asterisk/features_config.h"
 #include "asterisk/max_forwards.h"
+#include "asterisk/stream.h"
 
 /*** DOCUMENTATION
 	<application name="Bridge" language="en_US">
@@ -84,7 +85,9 @@
 		</synopsis>
 		<syntax>
 			<parameter name="channel" required="true">
-				<para>The current channel is bridged to the specified <replaceable>channel</replaceable>.</para>
+				<para>The current channel is bridged to the channel
+				identified by the channel name, channel name prefix, or channel
+				uniqueid.</para>
 			</parameter>
 			<parameter name="options">
 				<optionlist>
@@ -534,6 +537,7 @@ static int pre_bridge_setup(struct ast_channel *chan, struct ast_channel *peer, 
 		struct ast_bridge_features *chan_features, struct ast_bridge_features *peer_features)
 {
 	int res;
+	SCOPE_TRACE(1, "%s Peer: %s\n", ast_channel_name(chan), ast_channel_name(peer));
 
 	set_bridge_features_on_config(config, pbx_builtin_getvar_helper(chan, "BRIDGE_FEATURES"));
 	add_features_datastores(chan, peer, config);
@@ -555,11 +559,16 @@ static int pre_bridge_setup(struct ast_channel *chan, struct ast_channel *peer, 
 	set_config_flags(chan, config);
 
 	/* Answer if need be */
+
+	res = 0;
+
 	if (ast_channel_state(chan) != AST_STATE_UP) {
-		if (ast_raw_answer(chan)) {
+		res = ast_raw_answer_with_stream_topology(chan, config->answer_topology);
+		if (res != 0) {
 			return -1;
 		}
 	}
+
 
 #ifdef FOR_DEBUG
 	/* show the two channels and cdrs involved in the bridge for debug & devel purposes */
@@ -627,6 +636,7 @@ int ast_bridge_call_with_flags(struct ast_channel *chan, struct ast_channel *pee
 	struct ast_bridge *bridge;
 	struct ast_bridge_features chan_features;
 	struct ast_bridge_features *peer_features;
+	SCOPE_TRACE(1, "%s Peer: %s\n", ast_channel_name(chan), ast_channel_name(peer));
 
 	/* Setup features. */
 	res = ast_bridge_features_init(&chan_features);
@@ -893,7 +903,7 @@ int ast_bridge_timelimit(struct ast_channel *chan, struct ast_bridge_config *con
 		config->warning_freq = atol(warnfreq_str);
 
 	if (!config->timelimit) {
-		ast_log(LOG_WARNING, "Bridge does not accept L(%s), hanging up.\n", limit_str);
+		ast_log(LOG_WARNING, "Bridge does not accept L(%s)\n", limit_str);
 		config->timelimit = config->play_warning = config->warning_freq = 0;
 		config->warning_sound = NULL;
 		return -1; /* error */
@@ -996,7 +1006,7 @@ int ast_bridge_timelimit(struct ast_channel *chan, struct ast_bridge_config *con
  */
 static int bridge_exec(struct ast_channel *chan, const char *data)
 {
-	struct ast_channel *current_dest_chan;
+	struct ast_channel *current_dest_chan = NULL;
 	char *tmp_data  = NULL;
 	struct ast_flags opts = { 0, };
 	struct ast_bridge_config bconfig = { { 0, }, };
@@ -1017,22 +1027,20 @@ static int bridge_exec(struct ast_channel *chan, const char *data)
 		AST_APP_ARG(options);
 	);
 
-	if (ast_strlen_zero(data)) {
-		ast_log(LOG_WARNING, "Bridge require at least 1 argument specifying the other end of the bridge\n");
-		return -1;
+	tmp_data = ast_strdupa(data ?: "");
+	AST_STANDARD_APP_ARGS(args, tmp_data);
+	if (!ast_strlen_zero(args.options)) {
+		ast_app_parse_options(bridge_exec_options, &opts, opt_args, args.options);
 	}
 
-	tmp_data = ast_strdupa(data);
-	AST_STANDARD_APP_ARGS(args, tmp_data);
-	if (!ast_strlen_zero(args.options))
-		ast_app_parse_options(bridge_exec_options, &opts, opt_args, args.options);
-
 	/* make sure we have a valid end point */
-	current_dest_chan = ast_channel_get_by_name_prefix(args.dest_chan,
-		strlen(args.dest_chan));
+	if (!ast_strlen_zero(args.dest_chan)) {
+		current_dest_chan = ast_channel_get_by_name_prefix(args.dest_chan,
+			strlen(args.dest_chan));
+	}
 	if (!current_dest_chan) {
-		ast_log(LOG_WARNING, "Bridge failed because channel %s does not exist\n",
-			args.dest_chan);
+		ast_verb(4, "Bridge failed because channel '%s' does not exist\n",
+			args.dest_chan ?: "");
 		pbx_builtin_setvar_helper(chan, "BRIDGERESULT", "NONEXISTENT");
 		return 0;
 	}

@@ -67,6 +67,8 @@ int ast_verb_sys_level;
 int option_verbose;
 /*! Debug level */
 int option_debug;
+/*! Trace level */
+int option_trace;
 /*! Default to -1 to know if we have read the level from pjproject yet. */
 int ast_pjproject_max_log_level = -1;
 int ast_option_pjproject_log_level;
@@ -96,6 +98,7 @@ char record_cache_dir[AST_CACHE_DIR_LEN] = DEFAULT_TMP_DIR;
 char ast_defaultlanguage[MAX_LANGUAGE] = DEFAULT_LANGUAGE;
 
 struct _cfg_paths {
+	char cache_dir[PATH_MAX];
 	char config_dir[PATH_MAX];
 	char module_dir[PATH_MAX];
 	char spool_dir[PATH_MAX];
@@ -123,6 +126,7 @@ struct _cfg_paths {
 };
 
 static struct _cfg_paths cfg_paths = {
+	.cache_dir = DEFAULT_CACHE_DIR,
 	.config_dir = DEFAULT_CONFIG_DIR,
 	.module_dir = DEFAULT_MODULE_DIR,
 	.spool_dir = DEFAULT_SPOOL_DIR,
@@ -143,6 +147,7 @@ static struct _cfg_paths cfg_paths = {
 	.ctl_file = "asterisk.ctl",
 };
 
+const char *ast_config_AST_CACHE_DIR	= cfg_paths.cache_dir;
 const char *ast_config_AST_CONFIG_DIR	= cfg_paths.config_dir;
 const char *ast_config_AST_CONFIG_FILE	= cfg_paths.config_file;
 const char *ast_config_AST_MODULE_DIR	= cfg_paths.module_dir;
@@ -215,6 +220,7 @@ void load_asterisk_conf(void)
 	/* Default to false for security */
 	int live_dangerously = 0;
 	int option_debug_new = 0;
+	int option_trace_new = 0;
 	int option_verbose_new = 0;
 
 	/* init with buildtime config */
@@ -251,7 +257,9 @@ void load_asterisk_conf(void)
 	}
 
 	for (v = ast_variable_browse(cfg, "directories"); v; v = v->next) {
-		if (!strcasecmp(v->name, "astetcdir")) {
+		if (!strcasecmp(v->name, "astcachedir")) {
+			ast_copy_string(cfg_paths.cache_dir, v->value, sizeof(cfg_paths.cache_dir));
+		} else if (!strcasecmp(v->name, "astetcdir")) {
 			ast_copy_string(cfg_paths.config_dir, v->value, sizeof(cfg_paths.config_dir));
 		} else if (!strcasecmp(v->name, "astspooldir")) {
 			ast_copy_string(cfg_paths.spool_dir, v->value, sizeof(cfg_paths.spool_dir));
@@ -306,6 +314,11 @@ void load_asterisk_conf(void)
 			option_debug_new = 0;
 			if (sscanf(v->value, "%30d", &option_debug_new) != 1) {
 				option_debug_new = ast_true(v->value) ? 1 : 0;
+			}
+		} else if (!strcasecmp(v->name, "trace")) {
+			option_trace_new = 0;
+			if (sscanf(v->value, "%30d", &option_trace_new) != 1) {
+				option_trace_new = ast_true(v->value) ? 1 : 0;
 			}
 		} else if (!strcasecmp(v->name, "refdebug")) {
 			ast_set2_flag(&ast_options, ast_true(v->value), AST_OPT_FLAG_REF_DEBUG);
@@ -457,6 +470,8 @@ void load_asterisk_conf(void)
 			}
 		} else if (!strcasecmp(v->name, "live_dangerously")) {
 			live_dangerously = ast_true(v->value);
+		} else if (!strcasecmp(v->name, "hide_messaging_ami_events")) {
+			ast_set2_flag(&ast_options, ast_true(v->value), AST_OPT_FLAG_HIDE_MESSAGING_AMI_EVENTS);
 		}
 	}
 	if (!ast_opt_remote) {
@@ -464,6 +479,7 @@ void load_asterisk_conf(void)
 	}
 
 	option_debug += option_debug_new;
+	option_trace += option_trace_new;
 	option_verbose += option_verbose_new;
 
 	ast_config_destroy(cfg);

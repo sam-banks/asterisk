@@ -1057,14 +1057,16 @@ static struct ast_variable *ast_variable_new(const char *name, const char *value
 {
 	struct ast_variable *variable;
 	int name_len = strlen(name) + 1;
+	size_t value_len = strlen(value) + 1;
+	size_t filename_len = strlen(filename) + 1;
 
-	if ((variable = ast_calloc(1, name_len + strlen(value) + 1 + strlen(filename) + 1 + sizeof(*variable)))) {
+	if ((variable = ast_calloc(1, name_len + value_len + filename_len + sizeof(*variable)))) {
 		variable->name = variable->stuff;
 		variable->value = variable->stuff + name_len;
-		variable->file = variable->value + strlen(value) + 1;
+		variable->file = variable->value + value_len;
 		strcpy(variable->name,name);
-		strcpy(variable->value,value);
-		strcpy(variable->file,filename);
+		ast_copy_string(variable->value, value, value_len);
+		ast_copy_string(variable->file, filename, filename_len);
 	}
 
 	return variable;
@@ -3820,7 +3822,7 @@ int ast_build_timing(struct ast_timing *i, const char *info_in)
 
 	/* count the number of fields in the timespec */
 	for (j = 0, num_fields = 1; info[j] != '\0'; j++) {
-		if (info[j] == ',') {
+		if (info[j] == '|' || info[j] == ',') {
 			last_sep = j;
 			num_fields++;
 		}
@@ -4523,7 +4525,7 @@ static int ast_context_add_include2(struct ast_context *con, const char *value,
 	new_include->rname = p;
 	strcpy(p, value);
 	/* Strip off timing info, and process if it is there */
-	if ( (c = strchr(p, '|')) ) {
+	if ( (c = strchr(p, '|')) || (c = strchr(p, ',')) ) {
 		*c++ = '\0';
 		new_include->hastime = ast_build_timing(&(new_include->timing), c);
 	}

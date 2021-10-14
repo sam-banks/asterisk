@@ -33,9 +33,6 @@ ael/ael_lex.o: _ASTCFLAGS+=-I. -Iael -Wno-unused $(AST_NO_FORMAT_TRUNCATION)
 
 ael/ael.tab.o: ael/ael.tab.c ael/ael.tab.h ../include/asterisk/ael_structs.h
 ael/ael.tab.o: _ASTCFLAGS+=-I. -Iael -DYYENABLE_NLS=0
-	ifneq ($(AST_CLANG_BLOCKS),)
-		_ASTCFLAGS+=-Wno-parentheses-equality
-	endif
 
 ifneq ($(findstring REBUILD_PARSERS,$(MENUSELECT_CFLAGS)),)
 ael/ael_lex.c: ael/ael.flex
@@ -66,12 +63,16 @@ $(call MOD_ADD_C,res_stasis,$(wildcard stasis/*.c))
 $(call MOD_ADD_C,res_snmp,snmp/agent.c)
 $(call MOD_ADD_C,res_parking,$(wildcard parking/*.c))
 $(call MOD_ADD_C,res_pjsip,$(wildcard res_pjsip/*.c))
+$(call MOD_ADD_C,res_pjsip_session,$(wildcard res_pjsip_session/*.c))
 $(call MOD_ADD_C,res_prometheus,$(wildcard prometheus/*.c))
 $(call MOD_ADD_C,res_ari,ari/cli.c ari/config.c ari/ari_websockets.c)
 $(call MOD_ADD_C,res_ari_model,ari/ari_model_validators.c)
 $(call MOD_ADD_C,res_stasis_recording,stasis_recording/stored.c)
+$(call MOD_ADD_C,res_stir_shaken,$(wildcard res_stir_shaken/*.c))
 
 res_parking.o: _ASTCFLAGS+=$(AST_NO_FORMAT_TRUNCATION)
+snmp/agent.o: _ASTCFLAGS+=-fPIC
+res_snmp.o: _ASTCFLAGS+=-fPIC
 
 # Dependencies for res_ari_*.so are generated, so they're in this file
 include ari.make

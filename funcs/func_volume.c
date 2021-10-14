@@ -42,7 +42,7 @@
 /*** DOCUMENTATION
 	<function name="VOLUME" language="en_US">
 		<synopsis>
-			Set the TX or RX volume of a channel.
+			Set or get the TX or RX volume of a channel.
 		</synopsis>
 		<syntax>
 			<parameter name="direction" required="true">
@@ -70,8 +70,8 @@
 
 struct volume_information {
 	struct ast_audiohook audiohook;
-	int tx_gain;
-	int rx_gain;
+	float tx_gain;
+	float rx_gain;
 	unsigned int flags;
 };
 
@@ -107,7 +107,7 @@ static int volume_callback(struct ast_audiohook *audiohook, struct ast_channel *
 {
 	struct ast_datastore *datastore = NULL;
 	struct volume_information *vi = NULL;
-	int *gain = NULL;
+	float *gain = NULL;
 
 	/* If the audiohook is stopping it means the channel is shutting down.... but we let the datastore destroy take care of it */
 	if (audiohook->status == AST_AUDIOHOOK_STATUS_DONE)
@@ -141,7 +141,7 @@ static int volume_callback(struct ast_audiohook *audiohook, struct ast_channel *
 		if (!(gain = (direction == AST_AUDIOHOOK_DIRECTION_READ) ? &vi->rx_gain : &vi->tx_gain) || !*gain)
 			return 0;
 		/* Apply gain to frame... easy as pi */
-		ast_frame_adjust_volume(frame, *gain);
+		ast_frame_adjust_volume_float(frame, *gain);
 	}
 
 	return 0;
@@ -193,9 +193,9 @@ static int volume_write(struct ast_channel *chan, const char *cmd, char *data, c
 	}
 
 	if (!strcasecmp(args.direction, "tx")) {
-		vi->tx_gain = atoi(value);
+		vi->tx_gain = atof(value);
 	} else if (!strcasecmp(args.direction, "rx")) {
-		vi->rx_gain = atoi(value);
+		vi->rx_gain = atof(value);
 	} else {
 		ast_log(LOG_ERROR, "Direction must be either RX or TX\n");
 	}
@@ -221,9 +221,55 @@ static int volume_write(struct ast_channel *chan, const char *cmd, char *data, c
 	return 0;
 }
 
+static int volume_read(struct ast_channel *chan, const char *cmd, char *data, char *buffer, size_t buflen)
+{
+	struct ast_datastore *datastore = NULL;
+	struct volume_information *vi = NULL;
+
+	/* Separate options from argument */
+
+	AST_DECLARE_APP_ARGS(args,
+		AST_APP_ARG(direction);
+		AST_APP_ARG(options);
+	);
+
+	if (!chan) {
+		ast_log(LOG_WARNING, "No channel was provided to %s function.\n", cmd);
+		return -1;
+	}
+
+	AST_STANDARD_APP_ARGS(args, data);
+
+	ast_channel_lock(chan);
+	if (!(datastore = ast_channel_datastore_find(chan, &volume_datastore, NULL))) {
+		ast_channel_unlock(chan);
+		return -1; /* no active audiohook, nothing to read */
+	} else {
+		ast_channel_unlock(chan);
+		vi = datastore->data;
+	}
+
+	/* Obtain current gain using volume information structure */
+	if (ast_strlen_zero(args.direction)) {
+		ast_log(LOG_ERROR, "Direction must be specified for VOLUME function\n");
+		return -1;
+	}
+
+	if (!strcasecmp(args.direction, "tx")) {
+		snprintf(buffer, buflen, "%f", vi->tx_gain);
+	} else if (!strcasecmp(args.direction, "rx")) {
+		snprintf(buffer, buflen, "%f", vi->rx_gain);
+	} else {
+		ast_log(LOG_ERROR, "Direction must be either RX or TX\n");
+	}
+
+	return 0;
+}
+
 static struct ast_custom_function volume_function = {
 	.name = "VOLUME",
 	.write = volume_write,
+	.read = volume_read,
 };
 
 static int unload_module(void)

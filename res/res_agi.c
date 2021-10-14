@@ -323,15 +323,21 @@
 			Evaluates a channel expression
 		</synopsis>
 		<syntax>
-			<parameter name="variablename" required="true" />
-			<parameter name="channel name" />
+			<parameter name="expression" required="true" />
+			<parameter name="channelname" />
 		</syntax>
 		<description>
-			<para>Returns <literal>0</literal> if <replaceable>variablename</replaceable> is not set
-			or channel does not exist. Returns <literal>1</literal> if <replaceable>variablename</replaceable>
-			is set and returns the variable in parenthesis. Understands complex variable names and builtin
-			variables, unlike GET VARIABLE.</para>
-			<para>Example return code: 200 result=1 (testvariable)</para>
+			<para>Evaluates the given <replaceable>expression</replaceable> against the
+			channel specified by <replaceable>channelname</replaceable>, or the current
+			channel if <replaceable>channelname</replaceable> is not provided.</para>
+			<para>Unlike GET VARIABLE, the <replaceable>expression</replaceable> is
+			processed in a manner similar to dialplan evaluation, allowing complex
+			and built-in variables to be accessed, e.g. <literal>The time is
+			${EPOCH}</literal></para>
+			<para>Returns <literal>0</literal> if no channel matching
+			<replaceable>channelname</replaceable> exists, <literal>1</literal>
+			otherwise.</para>
+			<para>Example return code: 200 result=1 (The time is 1578493800)</para>
 		</description>
 		<see-also>
 			<ref type="agi">get variable</ref>
@@ -4504,7 +4510,7 @@ static int agi_exec_full(struct ast_channel *chan, const char *data, int enhance
 	memset(&agi, 0, sizeof(agi));
 	buf = ast_strdupa(data);
 	AST_STANDARD_APP_ARGS(args, buf);
-	args.argv[args.argc] = NULL;
+	args.arg[args.argc] = NULL;
 #if 0
 	 /* Answer if need be */
 	if (chan->_state != AST_STATE_UP) {
@@ -4512,7 +4518,7 @@ static int agi_exec_full(struct ast_channel *chan, const char *data, int enhance
 			return -1;
 	}
 #endif
-	res = launch_script(chan, args.argv[0], args.argc, args.argv, fds, enhanced ? &efd : NULL, &pid);
+	res = launch_script(chan, args.arg[0], args.argc, args.arg, fds, enhanced ? &efd : NULL, &pid);
 	/* Async AGI do not require run_agi(), so just proceed if normal AGI
 	   or Fast AGI are setup with success. */
 	if (res == AGI_RESULT_SUCCESS || res == AGI_RESULT_SUCCESS_FAST) {
@@ -4521,7 +4527,7 @@ static int agi_exec_full(struct ast_channel *chan, const char *data, int enhance
 		agi.ctrl = fds[0];
 		agi.audio = efd;
 		agi.fast = (res == AGI_RESULT_SUCCESS_FAST) ? 1 : 0;
-		res = run_agi(chan, args.argv[0], &agi, pid, &status, dead, args.argc, args.argv);
+		res = run_agi(chan, args.arg[0], &agi, pid, &status, dead, args.argc, args.arg);
 		/* If the fork'd process returns non-zero, set AGISTATUS to FAILURE */
 		if ((res == AGI_RESULT_SUCCESS || res == AGI_RESULT_SUCCESS_FAST) && status)
 			res = AGI_RESULT_FAILURE;

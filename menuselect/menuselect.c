@@ -210,6 +210,8 @@ static void free_member(struct member *mem)
 		xmlFree((void *) mem->defaultenabled);
 		xmlFree((void *) mem->support_level);
 		xmlFree((void *) mem->replacement);
+		xmlFree((void *) mem->deprecated_in);
+		xmlFree((void *) mem->removed_in);
 	}
 
 	free(mem);
@@ -341,6 +343,32 @@ static int process_xml_replacement_node(xmlNode *node, struct member *mem)
 	return 0;
 }
 
+static int process_xml_deprecatedin_node(xmlNode *node, struct member *mem)
+{
+	const char *tmp = (const char *) xmlNodeGetContent(node);
+
+	if (tmp && !strlen_zero(tmp)) {
+		xmlFree((void *) mem->deprecated_in);
+		mem->deprecated_in = tmp;
+		print_debug("Set deprecated_in for %s to %s\n", mem->name, mem->deprecated_in);
+	}
+
+	return 0;
+}
+
+static int process_xml_removedin_node(xmlNode *node, struct member *mem)
+{
+	const char *tmp = (const char *) xmlNodeGetContent(node);
+
+	if (tmp && !strlen_zero(tmp)) {
+		xmlFree((void *) mem->removed_in);
+		mem->removed_in = tmp;
+		print_debug("Set removed_in for %s to %s\n", mem->name, mem->removed_in);
+	}
+
+	return 0;
+}
+
 static int process_xml_ref_node(xmlNode *node, struct member *mem, struct reference_list *refs)
 {
 	struct reference *ref;
@@ -416,6 +444,8 @@ static const struct {
 	{ "conflict",       process_xml_conflict_node       },
 	{ "use",            process_xml_use_node            },
 	{ "member_data",    process_xml_member_data_node    },
+	{ "deprecated_in",  process_xml_deprecatedin_node   },
+	{ "removed_in",     process_xml_removedin_node      },
 };
 
 static node_handler lookup_node_handler(xmlNode *node)
@@ -467,7 +497,7 @@ static int process_xml_member_node(xmlNode *node, struct category *cat)
 		process_process_xml_category_child_node(cur, mem);
 	}
 
-	if (!cat->positive_output && strcasecmp(mem->support_level, "option")) {
+	if (!cat->positive_output) {
 		mem->enabled = 1;
 		if (!mem->defaultenabled || strcasecmp(mem->defaultenabled, "no")) {
 			mem->was_enabled = 1;
@@ -630,14 +660,14 @@ static unsigned int calc_dep_failures(int interactive, int pre_confload)
 	struct member *mem;
 	struct reference *dep;
 	struct dep_file *dep_file;
-	unsigned int changed, old_failure;
+	unsigned int changed;
 
 	AST_LIST_TRAVERSE(&categories, cat, list) {
 		AST_LIST_TRAVERSE(&cat->members, mem, list) {
 			if (mem->is_separator) {
 				continue;
 			}
-			old_failure = mem->depsfailed;
+			mem->depsfailedold = mem->depsfailed;
 			AST_LIST_TRAVERSE(&mem->deps, dep, list) {
 				if (dep->member)
 					continue;
@@ -655,7 +685,7 @@ static unsigned int calc_dep_failures(int interactive, int pre_confload)
 					break; /* This dependency is not met, so we can stop now */
 				}
 			}
-			if (old_failure == SOFT_FAILURE && mem->depsfailed != HARD_FAILURE)
+			if (mem->depsfailedold == SOFT_FAILURE && mem->depsfailed != HARD_FAILURE)
 				mem->depsfailed = SOFT_FAILURE;
 		}
 	}
@@ -672,8 +702,6 @@ static unsigned int calc_dep_failures(int interactive, int pre_confload)
 				if (mem->is_separator) {
 					continue;
 				}
-
-				old_failure = mem->depsfailed;
 
 				if (mem->depsfailed == HARD_FAILURE)
 					continue;
@@ -693,7 +721,7 @@ static unsigned int calc_dep_failures(int interactive, int pre_confload)
 					}
 				}
 
-				if (mem->depsfailed != old_failure) {
+				if (mem->depsfailed != mem->depsfailedold) {
 					if ((mem->depsfailed == NO_FAILURE) && mem->was_defaulted) {
 						mem->enabled = !strcasecmp(mem->defaultenabled, "yes");
 						print_debug("Just set %s enabled to %d\n", mem->name, mem->enabled);
@@ -702,6 +730,8 @@ static unsigned int calc_dep_failures(int interactive, int pre_confload)
 						print_debug("Just set %s enabled to %d\n", mem->name, mem->enabled);
 					}
 					changed = 1;
+					/* We need to update the old failed deps for the next loop of this */
+					mem->depsfailedold = mem->depsfailed;
 					break; /* This dependency is not met, so we can stop now */
 				}
 			}
@@ -2090,6 +2120,7 @@ int main(int argc, char *argv[])
 		/* Reset options processing */
 		option_index = 0;
 		optind = 1;
+		res = 0;
 
 		while ((c = getopt_long(argc, argv, "", long_options, &option_index)) != -1) {
 			print_debug("Got option %c\n", c);
@@ -2100,6 +2131,7 @@ int main(int argc, char *argv[])
 						set_member_enabled(mem);
 					} else {
 						fprintf(stderr, "'%s' not found\n", optarg);
+						res = 1;
 					}
 				}
 				break;
@@ -2109,6 +2141,7 @@ int main(int argc, char *argv[])
 						set_all(cat, 1);
 					} else {
 						fprintf(stderr, "'%s' not found\n", optarg);
+						res = 1;
 					}
 				}
 				break;
@@ -2123,6 +2156,7 @@ int main(int argc, char *argv[])
 						clear_member_enabled(mem);
 					} else {
 						fprintf(stderr, "'%s' not found\n", optarg);
+						res = 1;
 					}
 				}
 				break;
@@ -2132,6 +2166,7 @@ int main(int argc, char *argv[])
 						set_all(cat, 0);
 					} else {
 						fprintf(stderr, "'%s' not found\n", optarg);
+						res = 1;
 					}
 				}
 				break;
@@ -2146,7 +2181,6 @@ int main(int argc, char *argv[])
 				break;
 			}
 		}
-		res = 0;
 	}
 
 	if (!res) {

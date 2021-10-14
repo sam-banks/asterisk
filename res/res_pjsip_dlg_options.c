@@ -19,6 +19,7 @@
 /*** MODULEINFO
 	<depend>pjproject</depend>
 	<depend>res_pjsip</depend>
+	<depend>res_pjsip_session</depend>
 	<support_level>core</support_level>
 ***/
 
@@ -33,7 +34,7 @@
 #include "asterisk/res_pjsip_session.h"
 
 #define DEFAULT_LANGUAGE "en"
-#define DEFAULT_ENCODING "text/plain"
+#define DEFAULT_ENCODING "identity"
 
 static int options_incoming_request(struct ast_sip_session *session, pjsip_rx_data *rdata)
 {
@@ -99,5 +100,5 @@ AST_MODULE_INFO(ASTERISK_GPL_KEY, AST_MODFLAG_LOAD_ORDER, "SIP OPTIONS in dialog
 	.load = load_module,
 	.unload = unload_module,
 	.load_pri = AST_MODPRI_APP_DEPEND,
-	.requires = "res_pjsip",
+	.requires = "res_pjsip,res_pjsip_session",
 );

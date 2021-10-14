@@ -275,7 +275,7 @@ static int policy_set_suite(crypto_policy_t *p, enum ast_srtp_suite suite)
 		crypto_policy_set_aes_cm_128_hmac_sha1_32(p);
 		return 0;
 
-#ifdef HAVE_SRTP_192
+#if defined(HAVE_SRTP_192) && defined(ENABLE_SRTP_AES_192)
 	case AST_AES_CM_192_HMAC_SHA1_80:
 		crypto_policy_set_aes_cm_192_hmac_sha1_80(p);
 		return 0;
@@ -284,7 +284,7 @@ static int policy_set_suite(crypto_policy_t *p, enum ast_srtp_suite suite)
 		crypto_policy_set_aes_cm_192_hmac_sha1_32(p);
 		return 0;
 #endif
-#ifdef HAVE_SRTP_256
+#if defined(HAVE_SRTP_256) && defined(ENABLE_SRTP_AES_256)
 	case AST_AES_CM_256_HMAC_SHA1_80:
 		crypto_policy_set_aes_cm_256_hmac_sha1_80(p);
 		return 0;
@@ -293,17 +293,18 @@ static int policy_set_suite(crypto_policy_t *p, enum ast_srtp_suite suite)
 		crypto_policy_set_aes_cm_256_hmac_sha1_32(p);
 		return 0;
 #endif
-#ifdef HAVE_SRTP_GCM
+#if defined(HAVE_SRTP_GCM) && defined(ENABLE_SRTP_AES_GCM)
 	case AST_AES_GCM_128:
 		crypto_policy_set_aes_gcm_128_16_auth(p);
 		return 0;
 
-	case AST_AES_GCM_256:
-		crypto_policy_set_aes_gcm_256_16_auth(p);
-		return 0;
-
 	case AST_AES_GCM_128_8:
 		crypto_policy_set_aes_gcm_128_8_auth(p);
+		return 0;
+#endif
+#if defined(HAVE_SRTP_GCM) && defined(ENABLE_SRTP_AES_GCM) && defined(ENABLE_SRTP_AES_256)
+	case AST_AES_GCM_256:
+		crypto_policy_set_aes_gcm_256_16_auth(p);
 		return 0;
 
 	case AST_AES_GCM_256_8:
@@ -364,11 +365,12 @@ static void ast_srtp_set_cb(struct ast_srtp *srtp, const struct ast_srtp_cb *cb,
 }
 
 /* Vtable functions */
-static int ast_srtp_unprotect(struct ast_srtp *srtp, void *buf, int *len, int rtcp)
+static int ast_srtp_unprotect(struct ast_srtp *srtp, void *buf, int *len, int flags)
 {
 	int res = 0;
 	int i;
-	int retry = 0;
+	int rtcp  = (flags & 0x01) >> 0;
+	int retry = (flags & 0x02) >> 1;
 	struct ast_rtp_instance_stats stats = {0,};
 
 tryagain:
@@ -863,6 +865,14 @@ static int res_sdp_crypto_parse_offer(struct ast_rtp_instance *rtp, struct ast_s
 		crypto->tag = tag_from_sdp;
 	}
 
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_TAG_8);
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_TAG_16);
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_TAG_32);
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_TAG_80);
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_AES_192);
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_AES_256);
+	ast_clear_flag(srtp, AST_SRTP_CRYPTO_OLD_NAME);
+
 	if (!strcmp(suite, "AES_CM_128_HMAC_SHA1_80")) {
 		suite_val = AST_AES_CM_128_HMAC_SHA1_80;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_80);
@@ -871,7 +881,7 @@ static int res_sdp_crypto_parse_offer(struct ast_rtp_instance *rtp, struct ast_s
 		suite_val = AST_AES_CM_128_HMAC_SHA1_32;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_32);
 		key_len_expected = 30;
-#ifdef HAVE_SRTP_192
+#if defined(HAVE_SRTP_192) && defined(ENABLE_SRTP_AES_192)
 	} else if (!strcmp(suite, "AES_192_CM_HMAC_SHA1_80")) {
 		suite_val = AST_AES_CM_192_HMAC_SHA1_80;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_80);
@@ -896,7 +906,7 @@ static int res_sdp_crypto_parse_offer(struct ast_rtp_instance *rtp, struct ast_s
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_OLD_NAME);
 		key_len_expected = 38;
 #endif
-#ifdef HAVE_SRTP_256
+#if defined(HAVE_SRTP_256) && defined(ENABLE_SRTP_AES_256)
 	} else if (!strcmp(suite, "AES_256_CM_HMAC_SHA1_80")) {
 		suite_val = AST_AES_CM_256_HMAC_SHA1_80;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_80);
@@ -921,21 +931,24 @@ static int res_sdp_crypto_parse_offer(struct ast_rtp_instance *rtp, struct ast_s
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_OLD_NAME);
 		key_len_expected = 46;
 #endif
-#ifdef HAVE_SRTP_GCM
+#if defined(HAVE_SRTP_GCM) && defined(ENABLE_SRTP_AES_GCM)
 	} else if (!strcmp(suite, "AEAD_AES_128_GCM")) {
 		suite_val = AST_AES_GCM_128;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_16);
 		key_len_expected = AES_128_GCM_KEYSIZE_WSALT;
+	/* RFC contained a (too) short auth tag for RTP media, some still use that */
+	} else if (!strcmp(suite, "AEAD_AES_128_GCM_8")) {
+		suite_val = AST_AES_GCM_128_8;
+		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_8);
+		key_len_expected = AES_128_GCM_KEYSIZE_WSALT;
+#endif
+#if defined(HAVE_SRTP_GCM) && defined(ENABLE_SRTP_AES_GCM) && defined(ENABLE_SRTP_AES_256)
 	} else if (!strcmp(suite, "AEAD_AES_256_GCM")) {
 		suite_val = AST_AES_GCM_256;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_16);
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_AES_256);
 		key_len_expected = AES_256_GCM_KEYSIZE_WSALT;
 	/* RFC contained a (too) short auth tag for RTP media, some still use that */
-	} else if (!strcmp(suite, "AEAD_AES_128_GCM_8")) {
-		suite_val = AST_AES_GCM_128_8;
-		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_8);
-		key_len_expected = AES_128_GCM_KEYSIZE_WSALT;
 	} else if (!strcmp(suite, "AEAD_AES_256_GCM_8")) {
 		suite_val = AST_AES_GCM_256_8;
 		ast_set_flag(srtp, AST_SRTP_CRYPTO_TAG_8);

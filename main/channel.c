@@ -1238,6 +1238,17 @@ int ast_queue_control_data(struct ast_channel *chan, enum ast_control_frame_type
 	return ast_queue_frame(chan, &f);
 }
 
+/*! \brief Queue an ANSWER control frame with topology */
+int ast_queue_answer(struct ast_channel *chan, const struct ast_stream_topology *topology)
+{
+	struct ast_frame f = {
+		AST_FRAME_CONTROL,
+		.subclass.integer = AST_CONTROL_ANSWER,
+		.subclass.topology = (struct ast_stream_topology *)topology,
+	};
+	return ast_queue_frame(chan, &f);
+}
+
 /*! \brief Set defer DTMF flag on channel */
 int ast_channel_defer_dtmf(struct ast_channel *chan)
 {
@@ -1480,7 +1491,7 @@ int ast_is_deferrable_frame(const struct ast_frame *frame)
 }
 
 /*! \brief Wait, look for hangups and condition arg */
-int ast_safe_sleep_conditional(struct ast_channel *chan, int timeout_ms, int (*cond)(void*), void *data)
+static int safe_sleep_conditional(struct ast_channel *chan, int timeout_ms, int (*cond)(void*), void *data, unsigned int generate_silence)
 {
 	struct ast_frame *f;
 	struct ast_silence_generator *silgen = NULL;
@@ -1492,7 +1503,7 @@ int ast_safe_sleep_conditional(struct ast_channel *chan, int timeout_ms, int (*c
 	AST_LIST_HEAD_INIT_NOLOCK(&deferred_frames);
 
 	/* If no other generator is present, start silencegen while waiting */
-	if (ast_opt_transmit_silence && !ast_channel_generatordata(chan)) {
+	if (generate_silence && ast_opt_transmit_silence && !ast_channel_generatordata(chan)) {
 		silgen = ast_channel_start_silence_generator(chan);
 	}
 
@@ -1550,10 +1561,20 @@ int ast_safe_sleep_conditional(struct ast_channel *chan, int timeout_ms, int (*c
 	return res;
 }
 
+int ast_safe_sleep_conditional(struct ast_channel *chan, int timeout_ms, int (*cond)(void*), void *data)
+{
+	return safe_sleep_conditional(chan, timeout_ms, cond, data, 1);
+}
+
 /*! \brief Wait, look for hangups */
 int ast_safe_sleep(struct ast_channel *chan, int ms)
 {
-	return ast_safe_sleep_conditional(chan, ms, NULL, NULL);
+	return safe_sleep_conditional(chan, ms, NULL, NULL, 1);
+}
+
+int ast_safe_sleep_without_silence(struct ast_channel *chan, int ms)
+{
+	return safe_sleep_conditional(chan, ms, NULL, NULL, 0);
 }
 
 struct ast_channel *ast_channel_release(struct ast_channel *chan)
@@ -2619,9 +2640,11 @@ static void set_channel_answer_time(struct ast_channel *chan)
 	}
 }
 
-int ast_raw_answer(struct ast_channel *chan)
+
+int ast_raw_answer_with_stream_topology(struct ast_channel *chan, struct ast_stream_topology *topology)
 {
 	int res = 0;
+	SCOPE_TRACE(1, "%s\n", ast_channel_name(chan));
 
 	ast_channel_lock(chan);
 
@@ -2649,7 +2672,10 @@ int ast_raw_answer(struct ast_channel *chan)
 	case AST_STATE_RINGING:
 	case AST_STATE_RING:
 		ast_channel_lock(chan);
-		if (ast_channel_tech(chan)->answer) {
+		if (ast_channel_tech(chan)->answer_with_stream_topology) {
+			res = ast_channel_tech(chan)->answer_with_stream_topology(chan, topology);
+
+		} else if (ast_channel_tech(chan)->answer) {
 			res = ast_channel_tech(chan)->answer(chan);
 		}
 		ast_setstate(chan, AST_STATE_UP);
@@ -2666,10 +2692,16 @@ int ast_raw_answer(struct ast_channel *chan)
 	return res;
 }
 
+int ast_raw_answer(struct ast_channel *chan)
+{
+	return ast_raw_answer_with_stream_topology(chan, NULL);
+}
+
 int __ast_answer(struct ast_channel *chan, unsigned int delay)
 {
 	int res = 0;
 	enum ast_channel_state old_state;
+	SCOPE_TRACE(1, "%s\n", ast_channel_name(chan));
 
 	old_state = ast_channel_state(chan);
 	if ((res = ast_raw_answer(chan))) {
@@ -2777,6 +2809,7 @@ int __ast_answer(struct ast_channel *chan, unsigned int delay)
 
 int ast_answer(struct ast_channel *chan)
 {
+	SCOPE_TRACE(1, "%s\n", ast_channel_name(chan));
 	return __ast_answer(chan, 0);
 }
 
@@ -2819,6 +2852,33 @@ int ast_channel_get_up_time(struct ast_channel *chan)
 	return (ast_channel_get_up_time_ms(chan) / 1000);
 }
 
+/*!
+ * \brief Determine whether or not we have to trigger dtmf emulating using 50 fps timer events
+ * especially when no voice frames are received during dtmf processing (direct media or muted
+ * sender case using SIP INFO)
+ */
+static inline int should_trigger_dtmf_emulating(struct ast_channel *chan)
+{
+	if (ast_test_flag(ast_channel_flags(chan), AST_FLAG_DEFER_DTMF | AST_FLAG_EMULATE_DTMF)) {
+		/* We're in the middle of emulating a digit, or DTMF has been
+		 * explicitly deferred. Trigger dtmf with periodic 50 pfs timer events, then. */
+		return 1;
+	}
+
+	if (!ast_tvzero(*ast_channel_dtmf_tv(chan)) &&
+			ast_tvdiff_ms(ast_tvnow(), *ast_channel_dtmf_tv(chan)) < 2*AST_MIN_DTMF_GAP) {
+		/*
+		 * We're not in the middle of a digit, but it hasn't been long enough
+		 * since the last digit, so we'll have to trigger DTMF furtheron.
+		 * Using 2 times AST_MIN_DTMF_GAP to trigger readq reading for possible
+		 * buffered next dtmf event
+		 */
+		return 1;
+	}
+
+	return 0;
+}
+
 static void deactivate_generator_nolock(struct ast_channel *chan)
 {
 	if (ast_channel_generatordata(chan)) {
@@ -2839,6 +2899,10 @@ void ast_deactivate_generator(struct ast_channel *chan)
 {
 	ast_channel_lock(chan);
 	deactivate_generator_nolock(chan);
+	if (should_trigger_dtmf_emulating(chan)) {
+		/* if in the middle of dtmf emulation keep 50 tick per sec timer on rolling */
+		ast_timer_set_rate(ast_channel_timer(chan), 50);
+	}
 	ast_channel_unlock(chan);
 }
 
@@ -3261,6 +3325,7 @@ int ast_waitfordigit_full(struct ast_channel *c, int timeout_ms, const char *bre
 				case AST_CONTROL_UPDATE_RTP_PEER:
 				case AST_CONTROL_HOLD:
 				case AST_CONTROL_UNHOLD:
+				case AST_CONTROL_FLASH:
 				case -1:
 					/* Unimportant */
 					break;
@@ -3337,6 +3402,11 @@ static void send_dtmf_end_event(struct ast_channel *chan,
 	}
 
 	ast_channel_publish_blob(chan, ast_channel_dtmf_end_type(), blob);
+}
+
+static void send_flash_event(struct ast_channel *chan)
+{
+	ast_channel_publish_blob(chan, ast_channel_flash_type(), NULL);
 }
 
 static void ast_read_generator_actions(struct ast_channel *chan, struct ast_frame *f)
@@ -3508,6 +3578,7 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 
 	if (ast_channel_timingfd(chan) > -1 && ast_channel_fdno(chan) == AST_TIMING_FD) {
 		enum ast_timer_event res;
+		int trigger_dtmf_emulating = should_trigger_dtmf_emulating(chan);
 
 		ast_clear_flag(ast_channel_flags(chan), AST_FLAG_EXCEPTION);
 
@@ -3535,10 +3606,26 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 				if (got_ref) {
 					ao2_ref(data, -1);
 				}
+
+				if (trigger_dtmf_emulating) {
+					/*
+					 * Since we're breaking out of this switch block and not
+					 * returning, we need to re-lock the channel.
+					 */
+					ast_channel_lock(chan);
+					/* generate null frame to trigger dtmf emulating */
+					f = &ast_null_frame;
+					break;
+				}
+			} else if (trigger_dtmf_emulating) {
+				/* generate null frame to trigger dtmf emualating */
+				f = &ast_null_frame;
+				break;
 			} else {
 				ast_timer_set_rate(ast_channel_timer(chan), 0);
-				ast_channel_fdno_set(chan, -1);
-				ast_channel_unlock(chan);
+				/* generate very last null frame to trigger dtmf emulating */
+				f = &ast_null_frame;
+				break;
 			}
 
 			/* cannot 'goto done' because the channel is already unlocked */
@@ -3576,6 +3663,7 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 
 	/* Check for pending read queue */
 	if (!AST_LIST_EMPTY(ast_channel_readq(chan))) {
+		int skipped_dtmf_frame = 0;
 		int skip_dtmf = should_skip_dtmf(chan);
 
 		AST_LIST_TRAVERSE_SAFE_BEGIN(ast_channel_readq(chan), f, frame_list) {
@@ -3584,6 +3672,7 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 			 * some later time. */
 
 			if ( (f->frametype == AST_FRAME_DTMF_BEGIN || f->frametype == AST_FRAME_DTMF_END) && skip_dtmf) {
+				skipped_dtmf_frame = 1;
 				continue;
 			}
 
@@ -3595,7 +3684,19 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 		if (!f) {
 			/* There were no acceptable frames on the readq. */
 			f = &ast_null_frame;
-			ast_channel_alert_write(chan);
+			if (!skipped_dtmf_frame) {
+				/*
+				 * Do not trigger alert pipe if only buffered dtmf begin or end frames
+				 * are left in the readq.
+				 */
+				ast_channel_alert_write(chan);
+			} else {
+				/*
+				 * Safely disable continous timer events if only buffered dtmf begin or end
+				 * frames are left in the readq.
+				 */
+				ast_timer_disable_continuous(ast_channel_timer(chan));
+			}
 		}
 
 		/* Interpret hangup and end-of-Q frames to return NULL */
@@ -3750,7 +3851,12 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 					break;
 				case AST_FRAME_READ_ACTION_SEND_TEXT:
 					ast_channel_unlock(chan);
-					ast_sendtext(chan, (const char *) read_action_payload->payload);
+					ast_sendtext(chan, (const char *)read_action_payload->payload);
+					ast_channel_lock(chan);
+					break;
+				case AST_FRAME_READ_ACTION_SEND_TEXT_DATA:
+					ast_channel_unlock(chan);
+					ast_sendtext_data(chan, (struct ast_msg_data *)read_action_payload->payload);
 					ast_channel_lock(chan);
 					break;
 				}
@@ -3769,6 +3875,8 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 				 */
 				ast_frfree(f);
 				f = &ast_null_frame;
+			} else if (f->subclass.integer == AST_CONTROL_FLASH) {
+				send_flash_event(chan);
 			}
 			break;
 		case AST_FRAME_DTMF_END:
@@ -3801,6 +3909,16 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 					} else
 						ast_channel_emulate_dtmf_duration_set(chan, AST_DEFAULT_EMULATE_DTMF_DURATION);
 					ast_log(LOG_DTMF, "DTMF begin emulation of '%c' with duration %u queued on %s\n", f->subclass.integer, ast_channel_emulate_dtmf_duration(chan), ast_channel_name(chan));
+
+					/*
+					 * Start generating 50 fps timer events (null frames) for dtmf emulating
+					 * independently from any existing incoming voice frames.
+					 * If channel generator is already activated in regular mode use these
+					 * timer events to generate null frames.
+					 */
+					if (!ast_channel_generator(chan)) {
+						ast_timer_set_rate(ast_channel_timer(chan), 50);
+					}
 				}
 				if (ast_channel_audiohooks(chan)) {
 					struct ast_frame *old_frame = f;
@@ -3842,12 +3960,30 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 					ast_channel_emulate_dtmf_duration_set(chan, option_dtmfminduration - f->len);
 					ast_frfree(f);
 					f = &ast_null_frame;
+
+					/* Start generating 50 fps timer events (null frames) for dtmf emulating
+					 * independently from any existing incoming voice frames.
+					 * If channel generator is already activated in regular mode use these
+					 * timer events to generate null frames.
+					 */
+					if (!ast_channel_generator(chan)) {
+						ast_timer_set_rate(ast_channel_timer(chan), 50);
+					}
 				} else {
 					ast_log(LOG_DTMF, "DTMF end passthrough '%c' on %s\n", f->subclass.integer, ast_channel_name(chan));
 					if (f->len < option_dtmfminduration) {
 						f->len = option_dtmfminduration;
 					}
 					ast_channel_dtmf_tv_set(chan, &now);
+
+					/* Start generating 50 fps timer events (null frames) for dtmf emulating
+					 * independently from any existing incoming voice frames.
+					 * If channel generator is already activated in regular mode use these
+					 * timer events to generate null frames.
+					 */
+					if (!ast_channel_generator(chan)) {
+						ast_timer_set_rate(ast_channel_timer(chan), 50);
+					}
 				}
 				if (ast_channel_audiohooks(chan)) {
 					struct ast_frame *old_frame = f;
@@ -3900,6 +4036,15 @@ static struct ast_frame *__ast_read(struct ast_channel *chan, int dropaudio, int
 						if (old_frame != f) {
 							ast_frfree(old_frame);
 						}
+					}
+
+					/* Start generating 50 fps timer events (null frames) for dtmf emulating
+					 * independently from any existing incoming voice frames.
+					 * If channel generator is already activated in regular mode use these
+					 * timer events to generate null frames.
+					 */
+					if (!ast_channel_generator(chan)) {
+						ast_timer_set_rate(ast_channel_timer(chan), 50);
 					}
 				}
 			}
@@ -4946,6 +5091,18 @@ static void apply_plc(struct ast_channel *chan, struct ast_frame *frame)
 	adjust_frame_for_plc(chan, frame, datastore);
 }
 
+static int tech_write(struct ast_channel *chan, struct ast_stream *stream,
+			struct ast_stream *default_stream, struct ast_frame *frame)
+{
+	if (ast_channel_tech(chan)->write_stream) {
+		return stream ? ast_channel_tech(chan)->write_stream(
+			chan, ast_stream_get_position(stream), frame) : 0;
+	}
+
+	return ((stream == default_stream) && ast_channel_tech(chan)->write) ?
+		ast_channel_tech(chan)->write(chan, frame) : 0;
+}
+
 int ast_write(struct ast_channel *chan, struct ast_frame *fr)
 {
 	return ast_write_stream(chan, -1, fr);
@@ -5099,17 +5256,7 @@ int ast_write_stream(struct ast_channel *chan, int stream_num, struct ast_frame 
 		break;
 	case AST_FRAME_MODEM:
 		CHECK_BLOCKING(chan);
-		if (ast_channel_tech(chan)->write_stream) {
-			if (stream) {
-				res = ast_channel_tech(chan)->write_stream(chan, ast_stream_get_position(stream), fr);
-			} else {
-				res = 0;
-			}
-		} else if ((stream == default_stream) && ast_channel_tech(chan)->write) {
-			res = ast_channel_tech(chan)->write(chan, fr);
-		} else {
-			res = 0;
-		}
+		res = tech_write(chan, stream, default_stream, fr);
 		ast_clear_flag(ast_channel_flags(chan), AST_FLAG_BLOCKING);
 		break;
 	case AST_FRAME_VOICE:
@@ -5276,7 +5423,8 @@ int ast_write_stream(struct ast_channel *chan, int stream_num, struct ast_frame 
 				next = AST_LIST_NEXT(cur, frame_list);
 				AST_LIST_NEXT(cur, frame_list) = NULL;
 				if (!skip) {
-					if ((res = ast_channel_tech(chan)->write(chan, cur)) < 0) {
+					res = tech_write(chan, stream, default_stream, cur);
+					if (res < 0) {
 						ast_channel_softhangup_internal_flag_add(chan, AST_SOFTHANGUP_DEV);
 						skip = 1;
 					} else if (next) {
@@ -5293,17 +5441,7 @@ int ast_write_stream(struct ast_channel *chan, int stream_num, struct ast_frame 
 			/* reset f so the code below doesn't attempt to free it */
 			f = NULL;
 		} else {
-			if (ast_channel_tech(chan)->write_stream) {
-				if (stream) {
-					res = ast_channel_tech(chan)->write_stream(chan, ast_stream_get_position(stream), f);
-				} else {
-					res = 0;
-				}
-			} else if ((stream == default_stream) && ast_channel_tech(chan)->write) {
-				res = ast_channel_tech(chan)->write(chan, f);
-			} else {
-				res = 0;
-			}
+			res = tech_write(chan, stream, default_stream, f);
 		}
 		ast_clear_flag(ast_channel_flags(chan), AST_FLAG_BLOCKING);
 		break;
@@ -5589,11 +5727,15 @@ static int set_format(struct ast_channel *chan, struct ast_format_cap *cap_set, 
 		if (!direction) {
 			/* reading */
 			trans_pvt = ast_translator_build_path(best_set_fmt, best_native_fmt);
-			trans_pvt->interleaved_stereo = 0;
+			if (trans_pvt) {
+				trans_pvt->interleaved_stereo = 0;
+			}
 		} else {
 			/* writing */
 			trans_pvt = ast_translator_build_path(best_native_fmt, best_set_fmt);
-			trans_pvt->interleaved_stereo = interleaved_stereo;
+			if (trans_pvt) {
+				trans_pvt->interleaved_stereo = interleaved_stereo;
+			}
 		}
 		access->set_trans(chan, trans_pvt);
 		res = trans_pvt ? 0 : -1;
@@ -6135,13 +6277,18 @@ static struct ast_channel *request_channel(const char *type, struct ast_format_c
 
 		if (!request_cap && topology) {
 			/* Turn the request stream topology into capabilities */
-			request_cap = tmp_converted_cap = ast_format_cap_from_stream_topology(topology);
+			request_cap = tmp_converted_cap = ast_stream_topology_get_formats(topology);
 		}
 
 		/* find the best audio format to use */
 		tmp_cap = ast_format_cap_alloc(AST_FORMAT_CAP_FLAG_DEFAULT);
-		if (tmp_cap) {
-			ast_format_cap_append_from_cap(tmp_cap, request_cap, AST_MEDIA_TYPE_AUDIO);
+		if (!tmp_cap) {
+			AST_RWLIST_UNLOCK(&backends);
+			return NULL;
+		}
+
+		ast_format_cap_append_from_cap(tmp_cap, request_cap, AST_MEDIA_TYPE_AUDIO);
+		if (!ast_format_cap_empty(tmp_cap)) {
 			/* We have audio - is it possible to connect the various calls to each other?
 				(Avoid this check for calls without audio, like text+video calls)
 			*/
@@ -6172,7 +6319,9 @@ static struct ast_channel *request_channel(const char *type, struct ast_format_c
 		}
 		ast_format_cap_append_from_cap(joint_cap, request_cap, AST_MEDIA_TYPE_UNKNOWN);
 		ast_format_cap_remove_by_type(joint_cap, AST_MEDIA_TYPE_AUDIO);
-		ast_format_cap_append(joint_cap, best_audio_fmt, 0);
+		if (best_audio_fmt) { /* text+video call? then, this is NULL */
+			ast_format_cap_append(joint_cap, best_audio_fmt, 0);
+		}
 		ao2_cleanup(tmp_converted_cap);
 
 		c = chan->tech->requester(type, joint_cap, assignedids, requestor, addr, cause);
@@ -6344,7 +6493,29 @@ int ast_call(struct ast_channel *chan, const char *addr, int timeout)
 */
 int ast_transfer(struct ast_channel *chan, char *dest)
 {
+	int protocol;
+	return ast_transfer_protocol(chan, dest, &protocol);
+}
+
+/*!
+  \brief Transfer a call to dest, if the channel supports transfer
+
+  \param chan channel to transfer
+  \param dest destination to transfer to
+  \param protocol is the protocol result
+  SIP example, 0=success, 3xx-6xx is SIP error code
+
+  Called by:
+	\arg app_transfer
+	\arg the manager interface
+*/
+int ast_transfer_protocol(struct ast_channel *chan, char *dest, int *protocol)
+{
 	int res = -1;
+
+	if (protocol) {
+		*protocol = 0;
+	}
 
 	/* Stop if we're a zombie or need a soft hangup */
 	ast_channel_lock(chan);
@@ -6379,6 +6550,13 @@ int ast_transfer(struct ast_channel *chan, char *dest)
 				res = 1;
 			} else {
 				res = -1;
+				/* Message can contain a protocol specific code
+				   AST_TRANSFER_SUCCESS indicates success
+				   Else, failure.  Protocol will be set to the failure reason.
+				   SIP example, 0 is success, else error code 3xx-6xx */
+				if (protocol) {
+					*protocol = *message;
+				}
 			}
 
 			ast_frfree(fr);
@@ -8079,6 +8257,12 @@ int ast_say_number(struct ast_channel *chan, int num,
 	return ast_say_number_full(chan, num, ints, language, options, -1, -1);
 }
 
+int ast_say_ordinal(struct ast_channel *chan, int num,
+	const char *ints, const char *language, const char *options)
+{
+	return ast_say_ordinal_full(chan, num, ints, language, options, -1, -1);
+}
+
 int ast_say_enumeration(struct ast_channel *chan, int num,
 	const char *ints, const char *language, const char *options)
 {
@@ -8095,6 +8279,12 @@ int ast_say_digit_str(struct ast_channel *chan, const char *str,
 	const char *ints, const char *lang)
 {
 	return ast_say_digit_str_full(chan, str, ints, lang, -1, -1);
+}
+
+int ast_say_money_str(struct ast_channel *chan, const char *str,
+	const char *ints, const char *lang)
+{
+	return ast_say_money_str_full(chan, str, ints, lang, -1, -1);
 }
 
 int ast_say_character_str(struct ast_channel *chan, const char *str,
@@ -10599,6 +10789,7 @@ AST_MUTEX_DEFINE_STATIC(channel_move_lock);
 
 int ast_channel_move(struct ast_channel *dest, struct ast_channel *source)
 {
+	RAII_VAR(struct ast_json *, blob, NULL, ast_json_unref);
 	SCOPED_MUTEX(lock, &channel_move_lock);
 
 	if (dest == source) {
@@ -10622,6 +10813,10 @@ int ast_channel_move(struct ast_channel *dest, struct ast_channel *source)
 
 	ast_channel_masq_set(dest, source);
 	ast_channel_masqr_set(source, dest);
+
+	blob = ast_json_pack("{s: s}",
+			"newchanneluniqueid", ast_channel_uniqueid(dest));
+	ast_channel_publish_blob(source, ast_channel_masquerade_type(), blob);
 
 	ast_channel_unlock(dest);
 	ast_channel_unlock(source);
@@ -10680,6 +10875,9 @@ static struct ast_frame *suppress_framehook_event_cb(struct ast_channel *chan, s
 	if (suppress_frame) {
 		switch (frame->frametype) {
 		case AST_FRAME_VOICE:
+			if (event == AST_FRAMEHOOK_EVENT_READ) {
+				ast_frfree(frame);
+			}
 			frame = &ast_null_frame;
 			break;
 		default:
@@ -10904,8 +11102,10 @@ int ast_channel_request_stream_topology_change(struct ast_channel *chan,
 	}
 
 	if (ast_stream_topology_equal(ast_channel_get_stream_topology(chan), topology)) {
-		ast_debug(3, "Topology of %s already matches what is requested so ignoring topology change request\n",
-				ast_channel_name(chan));
+		ast_debug(2, "%s: Topologies already match. Current: %s  Requested: %s\n",
+				ast_channel_name(chan),
+				ast_str_tmp(256, ast_stream_topology_to_str(ast_channel_get_stream_topology(chan), &STR_TMP)),
+				ast_str_tmp(256, ast_stream_topology_to_str(topology, &STR_TMP)));
 		ast_channel_unlock(chan);
 		return 0;
 	}
@@ -10927,6 +11127,25 @@ int ast_channel_stream_topology_changed(struct ast_channel *chan, struct ast_str
 	}
 
 	return ast_channel_tech(chan)->indicate(chan, AST_CONTROL_STREAM_TOPOLOGY_CHANGED, topology, sizeof(topology));
+}
+
+int ast_channel_stream_topology_changed_externally(struct ast_channel *chan)
+{
+	int res;
+	struct ast_frame f = { AST_FRAME_CONTROL, .subclass.integer = AST_CONTROL_STREAM_TOPOLOGY_CHANGED };
+
+	ast_assert(chan != NULL);
+
+	if (!ast_channel_is_multistream(chan)) {
+		return -1;
+	}
+
+	ast_channel_lock(chan);
+	ast_channel_internal_set_stream_topology_change_source(chan, (void *)&ast_stream_topology_changed_external);
+	res = ast_queue_frame(chan, &f);
+	ast_channel_unlock(chan);
+
+	return res;
 }
 
 void ast_channel_set_flag(struct ast_channel *chan, unsigned int flag)

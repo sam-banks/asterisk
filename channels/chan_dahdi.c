@@ -43,9 +43,9 @@
  */
 
 /*** MODULEINFO
-	<use type="module">res_smdi</use>
 	<depend>dahdi</depend>
 	<depend>tonezone</depend>
+	<use type="module">res_smdi</use>
 	<use type="external">pri</use>
 	<use type="external">ss7</use>
 	<use type="external">openr2</use>
@@ -952,6 +952,10 @@ static struct dahdi_chan_conf dahdi_chan_conf_default(void)
 			.mohsuggest = "",
 			.parkinglot = "",
 			.transfertobusy = 1,
+
+			.ani_info_digits = 2,
+			.ani_wink_time = 1000,
+			.ani_timeout = 10000,
 
 			.cid_signalling = CID_SIG_BELL,
 			.cid_start = CID_START_RING,
@@ -4382,7 +4386,7 @@ static char *alarm2str(int alm)
 static const char *event2str(int event)
 {
 	static char buf[256];
-	if ((event < (ARRAY_LEN(events))) && (event > -1))
+	if ((event > -1) && (event < (ARRAY_LEN(events))) )
 		return events[event];
 	sprintf(buf, "Event %d", event); /* safe */
 	return buf;
@@ -9847,7 +9851,7 @@ static void *analog_ss_thread(void *data)
 		/* If starting a threeway call, never timeout on the first digit so someone
 		   can use flash-hook as a "hold" feature */
 		if (p->subs[SUB_THREEWAY].owner)
-			timeout = 999999;
+			timeout = INT_MAX;
 		while (len < AST_MAX_EXTENSION-1) {
 			int is_exten_parking = 0;
 
@@ -12839,6 +12843,9 @@ static struct dahdi_pvt *mkintf(int channel, const struct dahdi_chan_conf *conf,
 
 		tmp->polarityonanswerdelay = conf->chan.polarityonanswerdelay;
 		tmp->answeronpolarityswitch = conf->chan.answeronpolarityswitch;
+		tmp->ani_info_digits = conf->chan.ani_info_digits;
+		tmp->ani_wink_time = conf->chan.ani_wink_time;
+		tmp->ani_timeout = conf->chan.ani_timeout;
 		tmp->hanguponpolarityswitch = conf->chan.hanguponpolarityswitch;
 		tmp->sendcalleridafter = conf->chan.sendcalleridafter;
 		ast_cc_copy_config_params(tmp->cc_params, conf->chan.cc_params);
@@ -12944,6 +12951,9 @@ static struct dahdi_pvt *mkintf(int channel, const struct dahdi_chan_conf *conf,
 				analog_p->channel = tmp->channel;
 				analog_p->polarityonanswerdelay = conf->chan.polarityonanswerdelay;
 				analog_p->answeronpolarityswitch = conf->chan.answeronpolarityswitch;
+				analog_p->ani_info_digits = conf->chan.ani_info_digits;
+				analog_p->ani_timeout = conf->chan.ani_timeout;
+				analog_p->ani_wink_time = conf->chan.ani_wink_time;
 				analog_p->hanguponpolarityswitch = conf->chan.hanguponpolarityswitch;
 				analog_p->permcallwaiting = conf->chan.callwaiting; /* permcallwaiting possibly modified in analog_config_complete */
 				analog_p->callreturn = conf->chan.callreturn;
@@ -15174,7 +15184,7 @@ static void mfcr2_show_links_of(struct ast_cli_args *a, struct r2links *list_hea
 			inside_range = 0;
 			len = 0;
 			/* Prepare nice string in channel_list[] */
-			for (i = 0; i < mfcr2->numchans; i++) {
+			for (i = 0; i < mfcr2->numchans && len < sizeof(channel_list) - 1; i++) {
 				struct dahdi_pvt *p = mfcr2->pvts[i];
 				if (!p) {
 					continue;
@@ -18132,13 +18142,19 @@ static int process_dahdi(struct dahdi_chan_conf *confp, const char *cat, struct 
 		} else if (!strcasecmp(v->name, "namedpickupgroup")) {
 			confp->chan.named_pickupgroups = ast_get_namedgroups(v->value);
 		} else if (!strcasecmp(v->name, "setvar")) {
-			char *varname = ast_strdupa(v->value), *varval = NULL;
-			struct ast_variable *tmpvar;
-			if (varname && (varval = strchr(varname, '='))) {
-				*varval++ = '\0';
-				if ((tmpvar = ast_variable_new(varname, varval, ""))) {
-					tmpvar->next = confp->chan.vars;
-					confp->chan.vars = tmpvar;
+			if (v->value) {
+				char *varval = NULL;
+				struct ast_variable *tmpvar;
+				char varname[strlen(v->value) + 1];
+				strcpy(varname, v->value); /* safe */
+				if ((varval = strchr(varname, '='))) {
+					*varval++ = '\0';
+					if ((tmpvar = ast_variable_new(varname, varval, ""))) {
+						if (ast_variable_list_replace(&confp->chan.vars, tmpvar)) {
+							tmpvar->next = confp->chan.vars;
+							confp->chan.vars = tmpvar;
+						}
+					}
 				}
 			}
 		} else if (!strcasecmp(v->name, "immediate")) {
@@ -18235,6 +18251,12 @@ static int process_dahdi(struct dahdi_chan_conf *confp, const char *cat, struct 
 			confp->chan.polarityonanswerdelay = atoi(v->value);
 		} else if (!strcasecmp(v->name, "answeronpolarityswitch")) {
 			confp->chan.answeronpolarityswitch = ast_true(v->value);
+		} else if (!strcasecmp(v->name, "ani_info_digits")) {
+			confp->chan.ani_info_digits = atoi(v->value);
+		} else if (!strcasecmp(v->name, "ani_wink_time")) {
+			confp->chan.ani_wink_time = atoi(v->value);
+		} else if (!strcasecmp(v->name, "ani_timeout")) {
+			confp->chan.ani_timeout = atoi(v->value);
 		} else if (!strcasecmp(v->name, "hanguponpolarityswitch")) {
 			confp->chan.hanguponpolarityswitch = ast_true(v->value);
 		} else if (!strcasecmp(v->name, "sendcalleridafter")) {
@@ -19082,9 +19104,12 @@ static int process_dahdi(struct dahdi_chan_conf *confp, const char *cat, struct 
 			} else if (!strcasecmp(v->name, "mfcr2_logging")) {
 				openr2_log_level_t tmplevel;
 				char *clevel;
-				char *logval = ast_strdupa(v->value);
+				char *logval;
+				char copy[strlen(v->value) + 1];
+				strcpy(copy, v->value); /* safe */
+				logval = copy;
 				while (logval) {
- 					clevel = strsep(&logval,",");
+					clevel = strsep(&logval,",");
 					if (-1 == (tmplevel = openr2_log_get_level(clevel))) {
 						ast_log(LOG_WARNING, "Ignoring invalid logging level: '%s' at line %d.\n", clevel, v->lineno);
 						continue;

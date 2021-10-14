@@ -408,12 +408,18 @@ static int framein(struct ast_trans_pvt *pvt, struct ast_frame *f)
 		}
 	}
 	if (pvt->t->buffer_samples) {	/* do not pass empty frames to callback */
+		int src_srate = pvt->t->src_codec.sample_rate;
+		int dst_srate = pvt->t->dst_codec.sample_rate;
+
+		ast_assert(src_srate > 0);
+
 		if (f->datalen == 0) { /* perform native PLC if available */
 			/* If the codec has native PLC, then do that */
 			if (!pvt->t->native_plc)
 				return 0;
 		}
-		if (pvt->samples + f->samples > pvt->t->buffer_samples) {
+
+		if (pvt->samples + (f->samples * dst_srate / src_srate) > pvt->t->buffer_samples) {
 			ast_log(LOG_WARNING, "Out of buffer space\n");
 			return -1;
 		}
@@ -983,14 +989,14 @@ static char *handle_show_translation_table(struct ast_cli_args *a)
 {
 	int x, y, i, k;
 	int longest = 7; /* slin192 */
-	int num_codecs = 0, curlen = 0;
+	int max_codec_index = 0, curlen = 0;
 	struct ast_str *out = ast_str_create(1024);
 	struct ast_codec *codec;
 
 	/* Get the length of the longest (usable?) codec name,
 	   so we know how wide the left side should be */
 	for (i = 1; (codec = ast_codec_get_by_id(i)); ao2_ref(codec, -1), ++i) {
-		++num_codecs;
+		++max_codec_index;
 		if (codec->type != AST_MEDIA_TYPE_AUDIO) {
 			continue;
 		}
@@ -1004,7 +1010,7 @@ static char *handle_show_translation_table(struct ast_cli_args *a)
 	ast_cli(a->fd, "         Translation times between formats (in microseconds) for one second of data\n");
 	ast_cli(a->fd, "          Source Format (Rows) Destination Format (Columns)\n\n");
 
-	for (i = 0; i < num_codecs; i++) {
+	for (i = 0; i <= max_codec_index; i++) {
 		struct ast_codec *row = i ? ast_codec_get_by_id(i) : NULL;
 
 		x = -1;
@@ -1019,7 +1025,7 @@ static char *handle_show_translation_table(struct ast_cli_args *a)
 		}
 
 		ast_str_set(&out, 0, " ");
-		for (k = 0; k < num_codecs; k++) {
+		for (k = 0; k <= max_codec_index; k++) {
 			int adjust = 0;
 			struct ast_codec *col = k ? ast_codec_get_by_id(k) : NULL;
 
@@ -1509,16 +1515,19 @@ static void check_translation_path(
 	struct ast_format_cap *result, struct ast_format *src_fmt,
 	enum ast_media_type type)
 {
-	int index, src_index = format2index(src_fmt);
+	int i;
+
+	if (ast_format_get_type(src_fmt) != type) {
+		return;
+	}
+
 	/* For a given source format, traverse the list of
 	   known formats to determine whether there exists
 	   a translation path from the source format to the
 	   destination format. */
-	for (index = 0; (src_index >= 0) && index < cur_max_index; index++) {
-		struct ast_codec *codec = index2codec(index);
-		RAII_VAR(struct ast_format *, fmt, ast_format_create(codec), ao2_cleanup);
-
-		ao2_ref(codec, -1);
+	for (i = ast_format_cap_count(result) - 1; 0 <= i; i--) {
+		int index, src_index;
+		RAII_VAR(struct ast_format *, fmt, ast_format_cap_get_format(result, i), ao2_cleanup);
 
 		if (ast_format_get_type(fmt) != type) {
 			continue;
@@ -1532,6 +1541,15 @@ static void check_translation_path(
 		/* if the source is supplying this format, then
 		   we can leave it in the result */
 		if (ast_format_cap_iscompatible_format(src, fmt) == AST_FORMAT_CMP_EQUAL) {
+			continue;
+		}
+
+		/* if this is a pass-through format, not in the source,
+		   we cannot transcode. Therefore, remove it from the result */
+		src_index = format2index(src_fmt);
+		index = format2index(fmt);
+		if (src_index < 0 || index < 0) {
+			ast_format_cap_remove(result, fmt);
 			continue;
 		}
 

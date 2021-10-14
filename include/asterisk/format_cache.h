@@ -84,11 +84,6 @@ extern struct ast_format *ast_format_ulaw;
 extern struct ast_format *ast_format_alaw;
 
 /*!
- * \brief Built-in cached testlaw format.
- */
-extern struct ast_format *ast_format_testlaw;
-
-/*!
  * \brief Built-in cached gsm format.
  */
 extern struct ast_format *ast_format_gsm;
@@ -313,5 +308,18 @@ struct ast_format *ast_format_cache_get_slin_by_rate(unsigned int rate);
  * \retval 1 if the format is an SLIN format
  */
 int ast_format_cache_is_slinear(struct ast_format *format);
+
+/*!
+ * \brief Retrieve a format from the cache by its codec
+ *
+ * \param codec The codec to search by
+ *
+ * \retval non-NULL if found
+ * \retval NULL if not found
+ *
+ * \note The returned format has its reference count incremented. It must be
+ * dropped using ao2_ref or ao2_cleanup.
+ */
+struct ast_format *ast_format_cache_get_by_codec(const struct ast_codec *codec);
 
 #endif /* _AST_FORMAT_CACHE_H */

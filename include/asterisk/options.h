@@ -82,8 +82,12 @@ enum ast_option_flags {
 	AST_OPT_FLAG_MUTE = (1 << 22),
 	/*! There is a per-module debug setting */
 	AST_OPT_FLAG_DEBUG_MODULE = (1 << 23),
+	/*! There is a per-module trace setting */
+	AST_OPT_FLAG_TRACE_MODULE = (1 << 24),
 	/*! Terminal colors should be adjusted for a light-colored background */
 	AST_OPT_FLAG_LIGHT_BACKGROUND = (1 << 25),
+	/*! Make the global Message channel an internal channel to suppress AMI events */
+	AST_OPT_FLAG_HIDE_MESSAGING_AMI_EVENTS = (1 << 26),
 	/*! Force black background */
 	AST_OPT_FLAG_FORCE_BLACK_BACKGROUND = (1 << 27),
 	/*! Hide remote console connect messages on console */
@@ -122,6 +126,7 @@ enum ast_option_flags {
 #define ast_opt_always_fork		ast_test_flag(&ast_options, AST_OPT_FLAG_ALWAYS_FORK)
 #define ast_opt_mute			ast_test_flag(&ast_options, AST_OPT_FLAG_MUTE)
 #define ast_opt_dbg_module		ast_test_flag(&ast_options, AST_OPT_FLAG_DEBUG_MODULE)
+#define ast_opt_trace_module		ast_test_flag(&ast_options, AST_OPT_FLAG_TRACE_MODULE)
 #define ast_opt_light_background	ast_test_flag(&ast_options, AST_OPT_FLAG_LIGHT_BACKGROUND)
 #define ast_opt_force_black_background	ast_test_flag(&ast_options, AST_OPT_FLAG_FORCE_BLACK_BACKGROUND)
 #define ast_opt_hide_connect		ast_test_flag(&ast_options, AST_OPT_FLAG_HIDE_CONSOLE_CONNECT)
@@ -129,6 +134,7 @@ enum ast_option_flags {
 #define ast_opt_generic_plc         ast_test_flag(&ast_options, AST_OPT_FLAG_GENERIC_PLC)
 #define ast_opt_ref_debug           ast_test_flag(&ast_options, AST_OPT_FLAG_REF_DEBUG)
 #define ast_opt_generic_plc_on_equal_codecs  ast_test_flag(&ast_options, AST_OPT_FLAG_GENERIC_PLC_ON_EQUAL_CODECS)
+#define ast_opt_hide_messaging_ami_events  ast_test_flag(&ast_options, AST_OPT_FLAG_HIDE_MESSAGING_AMI_EVENTS)
 
 /*! Maximum log level defined by PJPROJECT. */
 #define MAX_PJ_LOG_MAX_LEVEL		6
@@ -181,6 +187,7 @@ extern struct ast_flags ast_options;
 extern int option_verbose;
 extern int ast_option_maxfiles;		/*!< Max number of open file handles (files, sockets) */
 extern int option_debug;		/*!< Debugging */
+extern int option_trace;		/*!< Debugging */
 extern int ast_option_maxcalls;		/*!< Maximum number of simultaneous channels */
 extern unsigned int option_dtmfminduration;	/*!< Minimum duration of DTMF (channel.c) in ms */
 extern double ast_option_maxload;

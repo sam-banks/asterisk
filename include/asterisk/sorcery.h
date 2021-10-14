@@ -323,6 +323,9 @@ struct ast_sorcery_wizard {
 
 	/* \brief Callback for whether or not the wizard believes the object is stale */
 	int (*is_stale)(const struct ast_sorcery *sorcery, void *data, void *object);
+
+	/*! \brief Optional callback for forcing a reload to occur, even if wizard has determined no changes */
+	void (*force_reload)(void *data, const struct ast_sorcery *sorcery, const char *type);
 };
 
 /*! \brief Interface for a sorcery object type observer */
@@ -1060,12 +1063,36 @@ void ast_sorcery_load_object(const struct ast_sorcery *sorcery, const char *type
 void ast_sorcery_reload(const struct ast_sorcery *sorcery);
 
 /*!
+ * \brief Inform any wizards to reload persistent objects, even if no changes determined
+ *
+ * \param sorcery Pointer to a sorcery structure
+ *
+ * \since 13.32.0
+ * \since 16.9.0
+ * \since 17.3.0
+ */
+void ast_sorcery_force_reload(const struct ast_sorcery *sorcery);
+
+/*!
  * \brief Inform any wizards of a specific object type to reload persistent objects
  *
  * \param sorcery Pointer to a sorcery structure
  * \param type Name of the object type to reload
  */
 void ast_sorcery_reload_object(const struct ast_sorcery *sorcery, const char *type);
+
+/*!
+ * \brief Inform any wizards of a specific object type to reload persistent objects
+ *        even if no changes determined
+ *
+ * \param sorcery Pointer to a sorcery structure
+ * \param type Name of the object type to reload
+ *
+ * \since 13.32.0
+ * \since 16.9.0
+ * \since 17.3.0
+ */
+void ast_sorcery_force_reload_object(const struct ast_sorcery *sorcery, const char *type);
 
 /*!
  * \brief Increase the reference count of a sorcery structure
@@ -1530,6 +1557,28 @@ const char *ast_sorcery_object_get_extended(const void *object, const char *name
  * \note If the extended field already exists it will be overwritten with the new value.
  */
 int ast_sorcery_object_set_extended(const void *object, const char *name, const char *value);
+
+/*!
+ * \brief Get whether an object contains dynamic contents or not
+ *
+ * \param object Pointer to a sorcery object
+ *
+ * \since 19
+ * \since 18.3.0
+ * \since 16.17.0
+ */
+unsigned int ast_sorcery_object_has_dynamic_contents(const void *object);
+
+/*!
+ * \brief Set the dynamic contents flag on a sorcery object
+ *
+ * \param object Pointer to a sorcery object
+ *
+ * \since 19
+ * \since 18.3.0
+ * \since 16.17.0
+ */
+void ast_sorcery_object_set_has_dynamic_contents(const void *object);
 
 /*!
  * \brief ao2 object comparator based on sorcery id.

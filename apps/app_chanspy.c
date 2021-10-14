@@ -509,7 +509,8 @@ static int start_spying(struct ast_autochan *autochan, const char *spychan_name,
 	int res;
 
 	ast_autochan_channel_lock(autochan);
-	ast_log(LOG_NOTICE, "Attaching %s to %s\n", spychan_name, ast_channel_name(autochan->chan));
+	ast_verb(3, "Attaching spy channel %s to %s\n",
+		spychan_name, ast_channel_name(autochan->chan));
 
 	if (ast_test_flag(flags, OPTION_READONLY)) {
 		ast_set_flag(audiohook, AST_AUDIOHOOK_MUTE_WRITE);
@@ -844,12 +845,12 @@ static int channel_spy(struct ast_channel *chan, struct ast_autochan *spyee_auto
 	ast_audiohook_unlock(&csth.spy_audiohook);
 	ast_audiohook_destroy(&csth.spy_audiohook);
 
+	ast_verb(2, "Done Spying on channel %s\n", name);
+	publish_chanspy_message(chan, spyee_autochan->chan, 0);
+
 	if (spyee_bridge_autochan) {
 		ast_autochan_destroy(spyee_bridge_autochan);
 	}
-
-	ast_verb(2, "Done Spying on channel %s\n", name);
-	publish_chanspy_message(chan, NULL, 0);
 
 	return running;
 }

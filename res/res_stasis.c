@@ -425,6 +425,33 @@ struct stasis_app_bridge_channel_wrapper {
 	);
 };
 
+/*! AO2 comparison function for bridges moh container */
+static int bridges_channel_compare(void *obj, void *arg, int flags)
+{
+	const struct stasis_app_bridge_channel_wrapper *object_left = obj;
+	const struct stasis_app_bridge_channel_wrapper *object_right = arg;
+	const char *right_key = arg;
+	int cmp;
+
+	switch (flags & OBJ_SEARCH_MASK) {
+	case OBJ_SEARCH_OBJECT:
+			right_key = object_right->bridge_id;
+	case OBJ_SEARCH_KEY:
+			cmp = strcmp(object_left->bridge_id, right_key);
+			break;
+	case OBJ_SEARCH_PARTIAL_KEY:
+			cmp = strncmp(object_left->bridge_id, right_key, strlen(right_key));
+			break;
+	default:
+			cmp = 0;
+			break;
+	}
+	if (cmp) {
+		return 0;
+	}
+	return CMP_MATCH;
+}
+
 static void stasis_app_bridge_channel_wrapper_destructor(void *obj)
 {
 	struct stasis_app_bridge_channel_wrapper *wrapper = obj;
@@ -792,6 +819,8 @@ static struct ast_bridge *bridge_create_common(const char *type, const char *nam
 			capabilities &= ~AST_BRIDGE_CAPABILITY_NATIVE;
 		} else if (!strcmp(requested_type, "video_sfu")) {
 			video_mode = AST_BRIDGE_VIDEO_MODE_SFU;
+		} else if (!strcmp(requested_type, "video_single")) {
+			video_mode = AST_BRIDGE_VIDEO_MODE_SINGLE_SRC;
 		}
 	}
 
@@ -808,22 +837,14 @@ static struct ast_bridge *bridge_create_common(const char *type, const char *nam
 		return NULL;
 	}
 
-	bridge = bridge_stasis_new(capabilities, flags, name, id);
+	bridge = bridge_stasis_new(capabilities, flags, name, id, video_mode);
 	if (bridge) {
-		if (video_mode == AST_BRIDGE_VIDEO_MODE_SFU) {
-			ast_bridge_set_sfu_video_mode(bridge);
-			/* We require a minimum 5 seconds between video updates to stop floods from clients,
-			 * this should rarely be changed but should become configurable in the future.
-			 */
-			ast_bridge_set_video_update_discard(bridge, 5);
-		} else {
-			ast_bridge_set_talker_src_video_mode(bridge);
-		}
 		if (!ao2_link(app_bridges, bridge)) {
 			ast_bridge_destroy(bridge, 0);
 			bridge = NULL;
 		}
 	}
+
 	return bridge;
 }
 
@@ -1704,7 +1725,7 @@ struct ao2_container *stasis_app_get_all(void)
 
 static int __stasis_app_register(const char *app_name, stasis_app_cb handler, void *data, int all_events)
 {
-	struct stasis_app *app;
+	RAII_VAR(struct stasis_app *, app, NULL, ao2_cleanup);
 
 	if (!apps_registry) {
 		return -1;
@@ -1713,36 +1734,43 @@ static int __stasis_app_register(const char *app_name, stasis_app_cb handler, vo
 	ao2_lock(apps_registry);
 	app = ao2_find(apps_registry, app_name, OBJ_SEARCH_KEY | OBJ_NOLOCK);
 	if (app) {
+		/*
+		 * We need to unlock the apps_registry before calling app_update to
+		 * prevent the possibility of a deadlock with the session.
+		 */
+		ao2_unlock(apps_registry);
 		app_update(app, handler, data);
-	} else {
-		app = app_create(app_name, handler, data, all_events ? STASIS_APP_SUBSCRIBE_ALL : STASIS_APP_SUBSCRIBE_MANUAL);
-		if (!app) {
-			ao2_unlock(apps_registry);
-			return -1;
-		}
-
-		if (all_events) {
-			struct stasis_app_event_source *source;
-
-			AST_RWLIST_RDLOCK(&event_sources);
-			AST_LIST_TRAVERSE(&event_sources, source, next) {
-				if (!source->subscribe) {
-					continue;
-				}
-
-				source->subscribe(app, NULL);
-			}
-			AST_RWLIST_UNLOCK(&event_sources);
-		}
-		ao2_link_flags(apps_registry, app, OBJ_NOLOCK);
+		cleanup();
+		return 0;
 	}
+
+	app = app_create(app_name, handler, data, all_events ? STASIS_APP_SUBSCRIBE_ALL : STASIS_APP_SUBSCRIBE_MANUAL);
+	if (!app) {
+		ao2_unlock(apps_registry);
+		return -1;
+	}
+
+	if (all_events) {
+		struct stasis_app_event_source *source;
+
+		AST_RWLIST_RDLOCK(&event_sources);
+		AST_LIST_TRAVERSE(&event_sources, source, next) {
+			if (!source->subscribe) {
+				continue;
+			}
+
+			source->subscribe(app, NULL);
+		}
+		AST_RWLIST_UNLOCK(&event_sources);
+	}
+	ao2_link_flags(apps_registry, app, OBJ_NOLOCK);
+
+	ao2_unlock(apps_registry);
 
 	/* We lazily clean up the apps_registry, because it's good enough to
 	 * prevent memory leaks, and we're lazy.
 	 */
 	cleanup();
-	ao2_unlock(apps_registry);
-	ao2_ref(app, -1);
 	return 0;
 }
 
@@ -2322,7 +2350,7 @@ static int load_module(void)
 		BRIDGES_NUM_BUCKETS, bridges_hash, NULL, bridges_compare);
 	app_bridges_moh = ao2_container_alloc_hash(
 		AO2_ALLOC_OPT_LOCK_MUTEX, 0,
-		37, bridges_channel_hash_fn, NULL, NULL);
+		37, bridges_channel_hash_fn, NULL, bridges_channel_compare);
 	app_bridges_playback = ao2_container_alloc_hash(
 		AO2_ALLOC_OPT_LOCK_MUTEX, AO2_CONTAINER_ALLOC_OPT_DUPS_REJECT,
 		37, bridges_channel_hash_fn, bridges_channel_sort_fn, NULL);

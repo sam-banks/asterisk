@@ -120,6 +120,7 @@
 							<enum name="ast_channel_hangup_request_type" />
 							<enum name="ast_channel_dtmf_begin_type" />
 							<enum name="ast_channel_dtmf_end_type" />
+							<enum name="ast_channel_flash_type" />
 							<enum name="ast_channel_hold_type" />
 							<enum name="ast_channel_unhold_type" />
 							<enum name="ast_channel_chanspy_start_type" />
@@ -130,6 +131,9 @@
 							<enum name="ast_channel_moh_stop_type" />
 							<enum name="ast_channel_monitor_start_type" />
 							<enum name="ast_channel_monitor_stop_type" />
+							<enum name="ast_channel_mixmonitor_start_type" />
+							<enum name="ast_channel_mixmonitor_stop_type" />
+							<enum name="ast_channel_mixmonitor_mute_type" />
 							<enum name="ast_channel_agent_login_type" />
 							<enum name="ast_channel_agent_logoff_type" />
 							<enum name="ast_channel_talking_start" />
@@ -301,7 +305,7 @@
 #define TOPIC_POOL_BUCKETS 57
 
 /*! Thread pool for topics that don't want a dedicated taskprocessor */
-static struct ast_threadpool *pool;
+static struct ast_threadpool *threadpool;
 
 STASIS_MESSAGE_TYPE_DEFN(stasis_subscription_change_type);
 
@@ -498,6 +502,7 @@ static int link_topic_proxy(struct stasis_topic *topic, const char *name, const 
 {
 	struct topic_proxy *proxy;
 	struct stasis_topic* topic_tmp;
+	size_t detail_len;
 
 	if (!topic || !name || !strlen(name) || !detail) {
 		return -1;
@@ -514,8 +519,10 @@ static int link_topic_proxy(struct stasis_topic *topic, const char *name, const 
 		return -1;
 	}
 
+	detail_len = strlen(detail) + 1;
+
 	proxy = ao2_t_weakproxy_alloc(
-			sizeof(*proxy) + strlen(name) + 1 + strlen(detail) + 1, NULL, name);
+			sizeof(*proxy) + strlen(name) + 1 + detail_len, NULL, name);
 	if (!proxy) {
 		ao2_unlock(topic_all);
 
@@ -527,7 +534,7 @@ static int link_topic_proxy(struct stasis_topic *topic, const char *name, const 
 	proxy->detail = proxy->name + strlen(name) + 1;
 
 	strcpy(proxy->name, name); /* SAFE */
-	strcpy(proxy->detail, detail); /* SAFE */
+	ast_copy_string(proxy->detail, detail, detail_len); /* SAFE */
 	proxy->creationtime = ast_tvnow();
 
 	/* We have exclusive access to proxy, no need for locking here. */
@@ -900,7 +907,7 @@ struct stasis_subscription *internal_stasis_subscribe(
 		 * pool should be used.
 		 */
 		if (use_thread_pool) {
-			sub->mailbox = ast_threadpool_serializer(tps_name, pool);
+			sub->mailbox = ast_threadpool_serializer(tps_name, threadpool);
 		} else {
 			sub->mailbox = ast_taskprocessor_get(tps_name, TPS_REF_DEFAULT);
 		}
@@ -1620,9 +1627,10 @@ static void subscription_change_dtor(void *obj)
 static struct stasis_subscription_change *subscription_change_alloc(struct stasis_topic *topic, const char *uniqueid, const char *description)
 {
 	size_t description_len = strlen(description) + 1;
+	size_t uniqueid_len = strlen(uniqueid) + 1;
 	struct stasis_subscription_change *change;
 
-	change = ao2_alloc_options(sizeof(*change) + description_len + strlen(uniqueid) + 1,
+	change = ao2_alloc_options(sizeof(*change) + description_len + uniqueid_len,
 		subscription_change_dtor, AO2_ALLOC_OPT_LOCK_NOLOCK);
 	if (!change) {
 		return NULL;
@@ -1630,7 +1638,7 @@ static struct stasis_subscription_change *subscription_change_alloc(struct stasi
 
 	strcpy(change->description, description); /* SAFE */
 	change->uniqueid = change->description + description_len;
-	strcpy(change->uniqueid, uniqueid); /* SAFE */
+	ast_copy_string(change->uniqueid, uniqueid, uniqueid_len); /* SAFE */
 	ao2_ref(topic, +1);
 	change->topic = topic;
 
@@ -1855,7 +1863,22 @@ struct stasis_topic_pool *stasis_topic_pool_create(struct stasis_topic *pooled_t
 
 void stasis_topic_pool_delete_topic(struct stasis_topic_pool *pool, const char *topic_name)
 {
-	ao2_find(pool->pool_container, topic_name, OBJ_SEARCH_KEY | OBJ_NODATA | OBJ_UNLINK);
+	/*
+	 * The topic_name passed in could be a fully-qualified name like <pool_topic_name>/<topic_name>
+	 * or just <topic_name>.  If it's fully qualified, we need to skip past <pool_topic_name>
+	 * name and search only on <topic_name>.
+	 */
+	const char *pool_topic_name = stasis_topic_name(pool->pool_topic);
+	int pool_topic_name_len = strlen(pool_topic_name);
+	const char *search_topic_name;
+
+	if (strncmp(pool_topic_name, topic_name, pool_topic_name_len) == 0) {
+		search_topic_name = topic_name + pool_topic_name_len + 1;
+	} else {
+		search_topic_name = topic_name;
+	}
+
+	ao2_find(pool->pool_container, search_topic_name, OBJ_SEARCH_KEY | OBJ_NODATA | OBJ_UNLINK);
 }
 
 struct stasis_topic *stasis_topic_pool_get_topic(struct stasis_topic_pool *pool, const char *topic_name)
@@ -2424,8 +2447,8 @@ static char *stasis_show_topic(struct ast_cli_entry *e, int cmd, struct ast_cli_
 
 	ast_cli(a->fd, "Name: %s\n", topic->name);
 	ast_cli(a->fd, "Detail: %s\n", topic->detail);
-	ast_cli(a->fd, "Subscribers count: %lu\n", AST_VECTOR_SIZE(&topic->subscribers));
-	ast_cli(a->fd, "Forwarding topic count: %lu\n", AST_VECTOR_SIZE(&topic->upstream_topics));
+	ast_cli(a->fd, "Subscribers count: %zu\n", AST_VECTOR_SIZE(&topic->subscribers));
+	ast_cli(a->fd, "Forwarding topic count: %zu\n", AST_VECTOR_SIZE(&topic->upstream_topics));
 	ast_format_duration_hh_mm_ss(ast_tvnow().tv_sec - topic->creationtime->tv_sec, print_time, sizeof(print_time));
 	ast_cli(a->fd, "Duration time: %s\n", print_time);
 
@@ -3027,8 +3050,8 @@ static void stasis_cleanup(void)
 	ast_cli_unregister_multiple(cli_stasis, ARRAY_LEN(cli_stasis));
 	ao2_cleanup(topic_all);
 	topic_all = NULL;
-	ast_threadpool_shutdown(pool);
-	pool = NULL;
+	ast_threadpool_shutdown(threadpool);
+	threadpool = NULL;
 	STASIS_MESSAGE_TYPE_CLEANUP(stasis_subscription_change_type);
 	STASIS_MESSAGE_TYPE_CLEANUP(ast_multi_user_event_type);
 	aco_info_destroy(&cfg_info);
@@ -3105,9 +3128,9 @@ int stasis_init(void)
 	threadpool_opts.auto_increment = 1;
 	threadpool_opts.max_size = cfg->threadpool_options->max_size;
 	threadpool_opts.idle_timeout = cfg->threadpool_options->idle_timeout_sec;
-	pool = ast_threadpool_create("stasis", NULL, &threadpool_opts);
+	threadpool = ast_threadpool_create("stasis", NULL, &threadpool_opts);
 	ao2_ref(cfg, -1);
-	if (!pool) {
+	if (!threadpool) {
 		ast_log(LOG_ERROR, "Failed to create 'stasis-core' threadpool\n");
 
 		return -1;

@@ -52,13 +52,25 @@
 			<para>Field of the message to get or set.</para>
 			<enumlist>
 				<enum name="to">
-					<para>Read-only.  The destination of the message.  When processing an
+					<para>When processing an
 					incoming message, this will be set to the destination listed as
 					the recipient of the message that was received by Asterisk.</para>
+					<para>
+					</para>
+					<para>For an ourgoing message, this will set the To header in the
+					outgoing SIP message.  This may be overridden by the "to" parameter
+					of MessageSend.
+					</para>
 				</enum>
 				<enum name="from">
-					<para>Read-only.  The source of the message.  When processing an
+					<para>When processing an
 					incoming message, this will be set to the source of the message.</para>
+					<para>
+					</para>
+					<para>For an ourgoing message, this will set the From header in the
+					outgoing SIP message. This may be overridden by the "from" parameter
+					of MessageSend.
+					</para>
 				</enum>
 				<enum name="custom_data">
 					<para>Write-only.  Mark or unmark all message headers for an outgoing
@@ -119,23 +131,39 @@
 			Send a text message.
 		</synopsis>
 		<syntax>
-			<parameter name="to" required="true">
+			<parameter name="destination" required="true">
 				<para>A To URI for the message.</para>
-				<xi:include xpointer="xpointer(/docs/info[@name='MessageToInfo'])" />
+				<xi:include xpointer="xpointer(/docs/info[@name='MessageDestinationInfo'])" />
 			</parameter>
 			<parameter name="from" required="false">
 				<para>A From URI for the message if needed for the
 				message technology being used to send this message. This can be a
 				SIP(S) URI, such as <literal>Alice &lt;sip:alice@atlanta.com&gt;</literal>,
-				a string in the format <literal>alice@atlanta.com</literal>, or simply
-				a username such as <literal>alice</literal>.</para>
+				or a string in the format <literal>alice@atlanta.com</literal>.
+				This will override a <literal>from</literal>
+				specified using the MESSAGE dialplan function or the <literal>from</literal>
+				that may have been on an incoming message.
+				</para>
+				<xi:include xpointer="xpointer(/docs/info[@name='MessageFromInfo'])" />
+			</parameter>
+			<parameter name="to" required="false">
+				<para>A To URI for the message if needed for the
+				message technology being used to send this message. This can be a
+				SIP(S) URI, such as <literal>Alice &lt;sip:alice@atlanta.com&gt;</literal>,
+				or a string in the format <literal>alice@atlanta.com</literal>.
+				This will override a <literal>to</literal>
+				specified using the MESSAGE dialplan function or the <literal>to</literal>
+				that may have been on an incoming message.
+				</para>
+				<xi:include xpointer="xpointer(/docs/info[@name='MessageToInfo'])" />
 			</parameter>
 		</syntax>
 		<description>
 			<para>Send a text message.  The body of the message that will be
 			sent is what is currently set to <literal>MESSAGE(body)</literal>.
-			  The technology chosen for sending the message is determined
-			based on a prefix to the <literal>to</literal> parameter.</para>
+			This may he come from an incoming message.
+			The technology chosen for sending the message is determined
+			based on a prefix to the <literal>destination</literal> parameter.</para>
 			<para>This application sets the following channel variables:</para>
 			<variablelist>
 				<variable name="MESSAGE_SEND_STATUS">
@@ -162,8 +190,22 @@
 		</synopsis>
 		<syntax>
 			<xi:include xpointer="xpointer(/docs/manager[@name='Login']/syntax/parameter[@name='ActionID'])" />
-			<parameter name="To" required="true">
-				<para>The URI the message is to be sent to.</para>
+			<parameter name="Destination" required="false">
+				<para>A To URI for the message. If Destination is provided, the To
+				parameter can also be supplied and may alter the message based on
+				the specified message technology.</para>
+				<para>For backwards compatibility, if Destination is not provided,
+				the To parameter must be provided and will be used as the message
+				destination.</para>
+				<xi:include xpointer="xpointer(/docs/info[@name='MessageDestinationInfo'])" />
+			</parameter>
+			<parameter name="To" required="false">
+				<para>A To URI for the message if needed for the
+				message technology being used to send this message. This can be a
+				SIP(S) URI, such as <literal>Alice &lt;sip:alice@atlanta.com&gt;</literal>,
+				or a string in the format <literal>alice@atlanta.com</literal>.</para>
+				<para>This parameter is required if the Destination parameter is not
+				provided.</para>
 				<xi:include xpointer="xpointer(/docs/info[@name='MessageToInfo'])" />
 			</parameter>
 			<parameter name="From">
@@ -283,7 +325,7 @@ static int chan_msg_send_digit_end(struct ast_channel *chan, char digit,
  * This will not be registered as we never want anything to try
  * to create Message channels other than internally in this file.
  */
-static const struct ast_channel_tech msg_chan_tech_hack = {
+static struct ast_channel_tech msg_chan_tech_hack = {
 	.type             = "Message",
 	.description      = "Internal Text Message Processing",
 	.read             = chan_msg_read,
@@ -627,7 +669,9 @@ struct ast_msg_var_iterator *ast_msg_var_iterator_init(const struct ast_msg *msg
 	return iter;
 }
 
-int ast_msg_var_iterator_next(const struct ast_msg *msg, struct ast_msg_var_iterator *iter, const char **name, const char **value)
+static int ast_msg_var_iterator_get_next(const struct ast_msg *msg,
+	struct ast_msg_var_iterator *iter, const char **name, const char **value,
+	unsigned int send)
 {
 	struct msg_data *data;
 
@@ -635,8 +679,8 @@ int ast_msg_var_iterator_next(const struct ast_msg *msg, struct ast_msg_var_iter
 		return 0;
 	}
 
-	/* Skip any that aren't marked for sending out */
-	while ((data = ao2_iterator_next(&iter->iter)) && !data->send) {
+	/* Skip any that we're told to */
+	while ((data = ao2_iterator_next(&iter->iter)) && (data->send != send)) {
 		ao2_ref(data, -1);
 	}
 
@@ -644,7 +688,7 @@ int ast_msg_var_iterator_next(const struct ast_msg *msg, struct ast_msg_var_iter
 		return 0;
 	}
 
-	if (data->send) {
+	if (data->send == send) {
 		*name = data->name;
 		*value = data->value;
 	}
@@ -654,6 +698,17 @@ int ast_msg_var_iterator_next(const struct ast_msg *msg, struct ast_msg_var_iter
 	iter->current_used = data;
 
 	return 1;
+}
+
+int ast_msg_var_iterator_next(const struct ast_msg *msg, struct ast_msg_var_iterator *iter, const char **name, const char **value)
+{
+	return ast_msg_var_iterator_get_next(msg, iter, name, value, 1);
+}
+
+int ast_msg_var_iterator_next_received(const struct ast_msg *msg,
+	  struct ast_msg_var_iterator *iter, const char **name, const char **value)
+{
+	return ast_msg_var_iterator_get_next(msg, iter, name, value, 0);
 }
 
 void ast_msg_var_unref_current(struct ast_msg_var_iterator *iter)
@@ -683,6 +738,10 @@ static struct ast_channel *create_msg_q_chan(void)
 
 	if (!chan) {
 		return NULL;
+	}
+
+	if (ast_opt_hide_messaging_ami_events) {
+		msg_chan_tech_hack.properties |= AST_CHAN_TP_INTERNAL;
 	}
 
 	ast_channel_tech_set(chan, &msg_chan_tech_hack);
@@ -1187,8 +1246,9 @@ static int msg_send_exec(struct ast_channel *chan, const char *data)
 	char *parse;
 	int res = -1;
 	AST_DECLARE_APP_ARGS(args,
-		AST_APP_ARG(to);
+		AST_APP_ARG(destination);
 		AST_APP_ARG(from);
+		AST_APP_ARG(to);
 	);
 
 	if (ast_strlen_zero(data)) {
@@ -1200,7 +1260,7 @@ static int msg_send_exec(struct ast_channel *chan, const char *data)
 	parse = ast_strdupa(data);
 	AST_STANDARD_APP_ARGS(args, parse);
 
-	if (ast_strlen_zero(args.to)) {
+	if (ast_strlen_zero(args.destination)) {
 		ast_log(LOG_WARNING, "A 'to' URI is required for MessageSend()\n");
 		pbx_builtin_setvar_helper(chan, "MESSAGE_SEND_STATUS", "INVALID_URI");
 		return 0;
@@ -1219,7 +1279,7 @@ static int msg_send_exec(struct ast_channel *chan, const char *data)
 	ao2_ref(msg, +1);
 	ast_channel_unlock(chan);
 
-	tech_name = ast_strdupa(args.to);
+	tech_name = ast_strdupa(args.destination);
 	tech_name = strsep(&tech_name, ":");
 
 	ast_rwlock_rdlock(&msg_techs_lock);
@@ -1232,12 +1292,20 @@ static int msg_send_exec(struct ast_channel *chan, const char *data)
 	}
 
 	/*
+	 * If there was a "to" in the call to MessageSend,
+	 * replace the to already in the channel datastore.
+	 */
+	if (!ast_strlen_zero(args.to)) {
+		ast_string_field_set(msg, to, args.to);
+	}
+
+	/*
 	 * The message lock is held here to safely allow the technology
 	 * implementation to access the message fields without worrying
 	 * that they could change.
 	 */
 	ao2_lock(msg);
-	res = msg_tech->msg_send(msg, S_OR(args.to, ""), S_OR(args.from, ""));
+	res = msg_tech->msg_send(msg, S_OR(args.destination, ""), S_OR(args.from, ""));
 	ao2_unlock(msg);
 
 	pbx_builtin_setvar_helper(chan, "MESSAGE_SEND_STATUS", res ? "FAILURE" : "SUCCESS");
@@ -1251,10 +1319,12 @@ exit_cleanup:
 
 static int action_messagesend(struct mansession *s, const struct message *m)
 {
-	const char *to = ast_strdupa(astman_get_header(m, "To"));
+	const char *destination = astman_get_header(m, "Destination");
+	const char *to = astman_get_header(m, "To");
 	const char *from = astman_get_header(m, "From");
 	const char *body = astman_get_header(m, "Body");
 	const char *base64body = astman_get_header(m, "Base64Body");
+	const char *to_override = NULL;
 	char base64decoded[1301] = { 0, };
 	char *tech_name = NULL;
 	struct ast_variable *vars = NULL;
@@ -1263,9 +1333,16 @@ static int action_messagesend(struct mansession *s, const struct message *m)
 	struct ast_msg *msg;
 	int res = -1;
 
-	if (ast_strlen_zero(to)) {
-		astman_send_error(s, m, "No 'To' address specified.");
-		return 0;
+	if (!ast_strlen_zero(destination)) {
+		if (!ast_strlen_zero(to)) {
+			to_override = to;
+		}
+		to = destination;
+	} else {
+		if (ast_strlen_zero(to)) {
+			astman_send_error(s, m, "No 'To' address specified.");
+			return 0;
+		}
 	}
 
 	if (!ast_strlen_zero(base64body)) {
@@ -1296,6 +1373,10 @@ static int action_messagesend(struct mansession *s, const struct message *m)
 	}
 
 	ast_msg_set_body(msg, "%s", body);
+
+	if (to_override) {
+		ast_string_field_set(msg, to, to_override);
+	}
 
 	res = msg_tech->msg_send(msg, S_OR(to, ""), S_OR(from, ""));
 
@@ -1404,12 +1485,38 @@ struct ast_msg_data *ast_msg_data_alloc(enum ast_msg_data_source_type source,
 	/* Set the ones we have and increment the offset */
 	for (i=0; i < count; i++) {
 		len = (strlen(attributes[i].value) + 1);
-		strcpy(msg->buf + current_offset, attributes[i].value); /* Safe */
+		ast_copy_string(msg->buf + current_offset, attributes[i].value, len); /* Safe */
 		msg->attribute_value_offsets[attributes[i].type] = current_offset;
 		current_offset += len;
 	}
 
 	return msg;
+}
+
+struct ast_msg_data *ast_msg_data_alloc2(enum ast_msg_data_source_type source_type,
+	const char *to, const char *from, const char *content_type, const char *body)
+{
+	struct ast_msg_data_attribute attrs[] =
+	{
+		{
+			.type = AST_MSG_DATA_ATTR_TO,
+			.value = (char *)S_OR(to, ""),
+		},
+		{
+			.type = AST_MSG_DATA_ATTR_FROM,
+			.value = (char *)S_OR(from, ""),
+		},
+		{
+			.type = AST_MSG_DATA_ATTR_CONTENT_TYPE,
+			.value = (char *)S_OR(content_type, ""),
+		},
+		{
+			.type = AST_MSG_DATA_ATTR_BODY,
+			.value = (char *)S_OR(body, ""),
+		},
+	};
+
+	return ast_msg_data_alloc(source_type, attrs, ARRAY_LEN(attrs));
 }
 
 struct ast_msg_data *ast_msg_data_dup(struct ast_msg_data *msg)
